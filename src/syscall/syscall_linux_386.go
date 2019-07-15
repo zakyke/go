@@ -10,27 +10,16 @@ package syscall
 import "unsafe"
 
 const (
-	_SYS_dup      = SYS_DUP2
-	_SYS_getdents = SYS_GETDENTS64
+	_SYS_dup       = SYS_DUP2
+	_SYS_setgroups = SYS_SETGROUPS32
 )
 
-func Getpagesize() int { return 4096 }
-
-func TimespecToNsec(ts Timespec) int64 { return int64(ts.Sec)*1e9 + int64(ts.Nsec) }
-
-func NsecToTimespec(nsec int64) (ts Timespec) {
-	ts.Sec = int32(nsec / 1e9)
-	ts.Nsec = int32(nsec % 1e9)
-	return
+func setTimespec(sec, nsec int64) Timespec {
+	return Timespec{Sec: int32(sec), Nsec: int32(nsec)}
 }
 
-func TimevalToNsec(tv Timeval) int64 { return int64(tv.Sec)*1e9 + int64(tv.Usec)*1e3 }
-
-func NsecToTimeval(nsec int64) (tv Timeval) {
-	nsec += 999 // round up to microsecond
-	tv.Sec = int32(nsec / 1e9)
-	tv.Usec = int32(nsec % 1e9 / 1e3)
-	return
+func setTimeval(sec, usec int64) Timeval {
+	return Timeval{Sec: int32(sec), Usec: int32(usec)}
 }
 
 //sysnb	pipe(p *[2]_C_int) (err error)
@@ -64,6 +53,7 @@ func Pipe2(p []int, flags int) (err error) {
 //sys	Dup2(oldfd int, newfd int) (err error)
 //sys	Fchown(fd int, uid int, gid int) (err error) = SYS_FCHOWN32
 //sys	Fstat(fd int, stat *Stat_t) (err error) = SYS_FSTAT64
+//sys	fstatat(dirfd int, path string, stat *Stat_t, flags int) (err error) = SYS_FSTATAT64
 //sys	Ftruncate(fd int, length int64) (err error) = SYS_FTRUNCATE64
 //sysnb	Getegid() (egid int) = SYS_GETEGID32
 //sysnb	Geteuid() (euid int) = SYS_GETEUID32
@@ -72,8 +62,6 @@ func Pipe2(p []int, flags int) (err error) {
 //sysnb	InotifyInit() (fd int, err error)
 //sys	Ioperm(from int, num int, on int) (err error)
 //sys	Iopl(level int) (err error)
-//sys	Lchown(path string, uid int, gid int) (err error) = SYS_LCHOWN32
-//sys	Lstat(path string, stat *Stat_t) (err error) = SYS_LSTAT64
 //sys	Pread(fd int, p []byte, offset int64) (n int, err error) = SYS_PREAD64
 //sys	Pwrite(fd int, p []byte, offset int64) (n int, err error) = SYS_PWRITE64
 //sys	sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) = SYS_SENDFILE64
@@ -84,7 +72,6 @@ func Pipe2(p []int, flags int) (err error) {
 //sysnb	Setresuid(ruid int, euid int, suid int) (err error) = SYS_SETRESUID32
 //sysnb	Setreuid(ruid int, euid int) (err error) = SYS_SETREUID32
 //sys	Splice(rfd int, roff *int64, wfd int, woff *int64, len int, flags int) (n int, err error)
-//sys	Stat(path string, stat *Stat_t) (err error) = SYS_STAT64
 //sys	SyncFileRange(fd int, off int64, n int64, flags int) (err error)
 //sys	Truncate(path string, length int64) (err error) = SYS_TRUNCATE64
 //sysnb	getgroups(n int, list *_Gid_t) (nn int, err error) = SYS_GETGROUPS32
@@ -92,6 +79,19 @@ func Pipe2(p []int, flags int) (err error) {
 //sys	Select(nfd int, r *FdSet, w *FdSet, e *FdSet, timeout *Timeval) (n int, err error) = SYS__NEWSELECT
 
 //sys	mmap2(addr uintptr, length uintptr, prot int, flags int, fd int, pageOffset uintptr) (xaddr uintptr, err error)
+//sys	EpollWait(epfd int, events []EpollEvent, msec int) (n int, err error)
+
+func Stat(path string, stat *Stat_t) (err error) {
+	return fstatat(_AT_FDCWD, path, stat, 0)
+}
+
+func Lchown(path string, uid int, gid int) (err error) {
+	return Fchownat(_AT_FDCWD, path, uid, gid, _AT_SYMLINK_NOFOLLOW)
+}
+
+func Lstat(path string, stat *Stat_t) (err error) {
+	return fstatat(_AT_FDCWD, path, stat, _AT_SYMLINK_NOFOLLOW)
+}
 
 func mmap(addr uintptr, length uintptr, prot int, flags int, fd int, offset int64) (xaddr uintptr, err error) {
 	page := uintptr(offset / 4096)
@@ -182,9 +182,9 @@ func Seek(fd int, offset int64, whence int) (newoffset int64, err error) {
 
 // On x86 Linux, all the socket calls go through an extra indirection,
 // I think because the 5-register system call interface can't handle
-// the 6-argument calls like sendto and recvfrom.  Instead the
+// the 6-argument calls like sendto and recvfrom. Instead the
 // arguments to the underlying system call are the number below
-// and a pointer to an array of uintptr.  We hide the pointer in the
+// and a pointer to an array of uintptr. We hide the pointer in the
 // socketcall assembly to avoid allocation on every system call.
 
 const (
@@ -364,7 +364,6 @@ func Statfs(path string, buf *Statfs_t) (err error) {
 		return err
 	}
 	_, _, e := Syscall(SYS_STATFS64, uintptr(unsafe.Pointer(pathp)), unsafe.Sizeof(*buf), uintptr(unsafe.Pointer(buf)))
-	use(unsafe.Pointer(pathp))
 	if e != 0 {
 		err = e
 	}
@@ -385,4 +384,8 @@ func (msghdr *Msghdr) SetControllen(length int) {
 
 func (cmsg *Cmsghdr) SetLen(length int) {
 	cmsg.Len = uint32(length)
+}
+
+func rawVforkSyscall(trap, a1 uintptr) (r1 uintptr, err Errno) {
+	panic("not implemented")
 }

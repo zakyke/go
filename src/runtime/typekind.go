@@ -1,4 +1,4 @@
-// Copyright 2014 The Go Authors.  All rights reserved.
+// Copyright 2014 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -34,7 +34,6 @@ const (
 
 	kindDirectIface = 1 << 5
 	kindGCProg      = 1 << 6
-	kindNoPointers  = 1 << 7
 	kindMask        = (1 << 5) - 1
 )
 

@@ -2,7 +2,9 @@
 // the old assembler's (8a's) grammar and hand-writing complete
 // instructions for each rule, to guarantee we cover the same space.
 
-TEXT foo(SB), 0, $0
+#include "../../../../../runtime/textflag.h"
+
+TEXT foo(SB), DUPOK|NOSPLIT, $0
 
 // LTYPE1 nonrem	{ outcode(int($1), &$2); }
 	SETCC	AX
@@ -12,7 +14,7 @@ TEXT foo(SB), 0, $0
 	DIVB	AX
 	DIVB	foo+4(SB)
 	PUSHL	$foo+4(SB)
-	POPL		AX // balance PUSHL
+	POPL		AX
 
 // LTYPE3 rimrem	{ outcode(int($1), &$2); }
 	SUBB	$1, AX
@@ -28,27 +30,31 @@ TEXT foo(SB), 0, $0
 
 // LTYPER nonrel	{ outcode(int($1), &$2); }
 label:
-	JC	label
-	JC	-1(PC)
+	JC	label // JCS
+	JC	-1(PC) // JCS -1(PC)
 
 // LTYPEC spec3	{ outcode(int($1), &$2); }
 	CALL	AX
-	JMP	*AX
+	JCS	2(PC)
+	JMP	*AX // JMP AX
 	CALL	*foo(SB)
+	JCS	2(PC)
 	JMP	$4
-	JMP	label
+	JCS	2(PC)
+	JMP	label // JMP 16
 	CALL	foo(SB)
-	CALL	(AX*4)
+//	CALL	(AX*4) // TODO: This line is silently dropped on the floor!
 	CALL	foo+4(SB)(AX*4)
-	CALL	*4(SP)
-	CALL	*(AX)
-	CALL	*(SP)
-	CALL	*(AX*4)
-	CALL	*(AX)(AX*4)
+	CALL	*4(SP) // CALL 4(SP)
+	CALL	*(AX) // CALL (AX)
+	CALL	*(SP) // CALL (SP)
+//	CALL	*(AX*4) // TODO: This line is silently dropped on the floor!
+	CALL	*(AX)(AX*4) // CALL (AX)(AX*4)
 	CALL	4(SP)
 	CALL	(AX)
 	CALL	(SP)
-	CALL	(AX*4)
+//	CALL	(AX*4) // TODO: This line is silently dropped on the floor!
+	JCS	2(PC)
 	JMP	(AX)(AX*4)
 
 // LTYPEN spec4	{ outcode(int($1), &$2); }
@@ -59,12 +65,12 @@ label:
 // LTYPES spec5	{ outcode(int($1), &$2); }
 	SHLL	$4, BX
 	SHLL	$4, foo+4(SB)
-	SHLL	$4, foo+4(SB):AX
+	SHLL	$4, foo+4(SB):AX // SHLL $4, AX, foo+4(SB)
 
 // LTYPEM spec6	{ outcode(int($1), &$2); }
 	MOVL	AX, BX
 	MOVL	$4, BX
-	
+
 // LTYPEI spec7	{ outcode(int($1), &$2); }
 	IMULL	AX
 	IMULL	$4, CX
@@ -72,15 +78,21 @@ label:
 
 // LTYPEXC spec9	{ outcode(int($1), &$2); }
 	CMPPD	X0, X1, 4
-	CMPPD	X0, foo+4(SB), 4
+	CMPPD	foo+4(SB), X1, 4
 
 // LTYPEX spec10	{ outcode(int($1), &$2); }
 	PINSRD	$1, (AX), X0
 	PINSRD	$2, foo+4(FP), X0
 
 // Was bug: LOOP is a branch instruction.
+	JCS	2(PC)
 loop:
-	LOOP	loop
+	LOOP	loop // LOOP
+
+// Tests for TLS reference.
+	MOVL    (TLS), AX
+	MOVL    8(TLS), DX
 
 // LTYPE0 nonnon	{ outcode(int($1), &$2); }
 	RET
+	RET	foo(SB)

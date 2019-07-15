@@ -1,4 +1,4 @@
-// Copyright 2013 The Go Authors.  All rights reserved.
+// Copyright 2013 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -11,13 +11,48 @@ import (
 	. "runtime"
 	"strings"
 	"testing"
+	"unsafe"
 )
+
+func TestMemHash32Equality(t *testing.T) {
+	if *UseAeshash {
+		t.Skip("skipping since AES hash implementation is used")
+	}
+	var b [4]byte
+	r := rand.New(rand.NewSource(1234))
+	seed := uintptr(r.Uint64())
+	for i := 0; i < 100; i++ {
+		randBytes(r, b[:])
+		got := MemHash32(unsafe.Pointer(&b), seed)
+		want := MemHash(unsafe.Pointer(&b), seed, 4)
+		if got != want {
+			t.Errorf("MemHash32(%x, %v) = %v; want %v", b, seed, got, want)
+		}
+	}
+}
+
+func TestMemHash64Equality(t *testing.T) {
+	if *UseAeshash {
+		t.Skip("skipping since AES hash implementation is used")
+	}
+	var b [8]byte
+	r := rand.New(rand.NewSource(1234))
+	seed := uintptr(r.Uint64())
+	for i := 0; i < 100; i++ {
+		randBytes(r, b[:])
+		got := MemHash64(unsafe.Pointer(&b), seed)
+		want := MemHash(unsafe.Pointer(&b), seed, 8)
+		if got != want {
+			t.Errorf("MemHash64(%x, %v) = %v; want %v", b, seed, got, want)
+		}
+	}
+}
 
 // Smhasher is a torture test for hash functions.
 // https://code.google.com/p/smhasher/
 // This code is a port of some of the Smhasher tests to Go.
 //
-// The current AES hash function passes Smhasher.  Our fallback
+// The current AES hash function passes Smhasher. Our fallback
 // hash functions don't, so we only enable the difficult tests when
 // we know the AES implementation is available.
 
@@ -126,6 +161,9 @@ func TestSmhasherZeros(t *testing.T) {
 
 // Strings with up to two nonzero bytes all have distinct hashes.
 func TestSmhasherTwoNonzero(t *testing.T) {
+	if GOARCH == "wasm" {
+		t.Skip("Too slow on wasm")
+	}
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -139,13 +177,13 @@ func twoNonZero(h *HashSet, n int) {
 	b := make([]byte, n)
 
 	// all zero
-	h.addB(b[:])
+	h.addB(b)
 
 	// one non-zero byte
 	for i := 0; i < n; i++ {
 		for x := 1; x < 256; x++ {
 			b[i] = byte(x)
-			h.addB(b[:])
+			h.addB(b)
 			b[i] = 0
 		}
 	}
@@ -157,7 +195,7 @@ func twoNonZero(h *HashSet, n int) {
 			for j := i + 1; j < n; j++ {
 				for y := 1; y < 256; y++ {
 					b[j] = byte(y)
-					h.addB(b[:])
+					h.addB(b)
 					b[j] = 0
 				}
 			}
@@ -194,6 +232,9 @@ func TestSmhasherCyclic(t *testing.T) {
 
 // Test strings with only a few bits set
 func TestSmhasherSparse(t *testing.T) {
+	if GOARCH == "wasm" {
+		t.Skip("Too slow on wasm")
+	}
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -229,6 +270,9 @@ func setbits(h *HashSet, b []byte, i int, k int) {
 // Test all possible combinations of n blocks from the set s.
 // "permutation" is a bad name here, but it is what Smhasher uses.
 func TestSmhasherPermutation(t *testing.T) {
+	if GOARCH == "wasm" {
+		t.Skip("Too slow on wasm")
+	}
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -349,7 +393,7 @@ func (k *EfaceKey) random(r *rand.Rand) {
 	k.i = uint64(r.Int63())
 }
 func (k *EfaceKey) bits() int {
-	// use 64 bits.  This tests inlined interfaces
+	// use 64 bits. This tests inlined interfaces
 	// on 64-bit targets and indirect interfaces on
 	// 32-bit targets.
 	return 64
@@ -381,7 +425,7 @@ func (k *IfaceKey) random(r *rand.Rand) {
 	k.i = fInter(r.Int63())
 }
 func (k *IfaceKey) bits() int {
-	// use 64 bits.  This tests inlined interfaces
+	// use 64 bits. This tests inlined interfaces
 	// on 64-bit targets and indirect interfaces on
 	// 32-bit targets.
 	return 64
@@ -398,6 +442,9 @@ func (k *IfaceKey) name() string {
 
 // Flipping a single bit of a key should flip each output bit with 50% probability.
 func TestSmhasherAvalanche(t *testing.T) {
+	if GOARCH == "wasm" {
+		t.Skip("Too slow on wasm")
+	}
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -443,7 +490,7 @@ func avalancheTest1(t *testing.T, k Key) {
 
 	// Each entry in the grid should be about REP/2.
 	// More precisely, we did N = k.bits() * hashSize experiments where
-	// each is the sum of REP coin flips.  We want to find bounds on the
+	// each is the sum of REP coin flips. We want to find bounds on the
 	// sum of coin flips such that a truly random experiment would have
 	// all sums inside those bounds with 99% probability.
 	N := n * hashSize
@@ -473,6 +520,9 @@ func TestSmhasherWindowed(t *testing.T) {
 	windowed(t, &BytesKey{make([]byte, 128)})
 }
 func windowed(t *testing.T, k Key) {
+	if GOARCH == "wasm" {
+		t.Skip("Too slow on wasm")
+	}
 	if testing.Short() {
 		t.Skip("Skipping in short mode")
 	}
@@ -563,19 +613,19 @@ func BenchmarkHash1024(b *testing.B)  { benchmarkHash(b, 1024) }
 func BenchmarkHash65536(b *testing.B) { benchmarkHash(b, 65536) }
 
 func TestArrayHash(t *testing.T) {
-	// Make sure that "" in arrays hash correctly.  The hash
+	// Make sure that "" in arrays hash correctly. The hash
 	// should at least scramble the input seed so that, e.g.,
 	// {"","foo"} and {"foo",""} have different hashes.
 
 	// If the hash is bad, then all (8 choose 4) = 70 keys
 	// have the same hash. If so, we allocate 70/8 = 8
-	// overflow buckets.  If the hash is good we don't
+	// overflow buckets. If the hash is good we don't
 	// normally allocate any overflow buckets, and the
 	// probability of even one or two overflows goes down rapidly.
-	// (There is always 1 allocation of the bucket array.  The map
+	// (There is always 1 allocation of the bucket array. The map
 	// header is allocated on the stack.)
 	f := func() {
-		// Make the key type at most 128 bytes.  Otherwise,
+		// Make the key type at most 128 bytes. Otherwise,
 		// we get an allocation per key.
 		type key [8]string
 		m := make(map[key]bool, 70)
@@ -656,5 +706,50 @@ func TestStructHash(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(10, f); n > 6 {
 		t.Errorf("too many allocs %f - hash not balanced", n)
+	}
+}
+
+var sink uint64
+
+func BenchmarkAlignedLoad(b *testing.B) {
+	var buf [16]byte
+	p := unsafe.Pointer(&buf[0])
+	var s uint64
+	for i := 0; i < b.N; i++ {
+		s += ReadUnaligned64(p)
+	}
+	sink = s
+}
+
+func BenchmarkUnalignedLoad(b *testing.B) {
+	var buf [16]byte
+	p := unsafe.Pointer(&buf[1])
+	var s uint64
+	for i := 0; i < b.N; i++ {
+		s += ReadUnaligned64(p)
+	}
+	sink = s
+}
+
+func TestCollisions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping in short mode")
+	}
+	for i := 0; i < 16; i++ {
+		for j := 0; j < 16; j++ {
+			if j == i {
+				continue
+			}
+			var a [16]byte
+			m := make(map[uint16]struct{}, 1<<16)
+			for n := 0; n < 1<<16; n++ {
+				a[i] = byte(n)
+				a[j] = byte(n >> 8)
+				m[uint16(BytesHash(a[:], 0))] = struct{}{}
+			}
+			if len(m) <= 1<<15 {
+				t.Errorf("too many collisions i=%d j=%d outputs=%d out of 65536\n", i, j, len(m))
+			}
+		}
 	}
 }

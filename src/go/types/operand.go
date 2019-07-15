@@ -122,13 +122,15 @@ func operandString(x *operand, qf Qualifier) string {
 	case invalid, novalue, builtin, typexpr:
 		// no type
 	default:
-		// has type
-		if isUntyped(x.typ) {
-			buf.WriteString(x.typ.(*Basic).name)
-			buf.WriteByte(' ')
-			break
+		// should have a type, but be cautious (don't crash during printing)
+		if x.typ != nil {
+			if isUntyped(x.typ) {
+				buf.WriteString(x.typ.(*Basic).name)
+				buf.WriteByte(' ')
+				break
+			}
+			hasType = true
 		}
-		hasType = true
 	}
 
 	// <mode>
@@ -166,13 +168,6 @@ func (x *operand) String() string {
 
 // setConst sets x to the untyped constant for literal lit.
 func (x *operand) setConst(tok token.Token, lit string) {
-	val := constant.MakeFromLiteral(lit, tok, 0)
-	if val == nil {
-		// TODO(gri) Should we make it an unknown constant instead?
-		x.mode = invalid
-		return
-	}
-
 	var kind BasicKind
 	switch tok {
 	case token.INT:
@@ -185,11 +180,13 @@ func (x *operand) setConst(tok token.Token, lit string) {
 		kind = UntypedRune
 	case token.STRING:
 		kind = UntypedString
+	default:
+		unreachable()
 	}
 
 	x.mode = constant_
 	x.typ = Typ[kind]
-	x.val = val
+	x.val = constant.MakeFromLiteral(lit, tok, 0)
 }
 
 // isNil reports whether x is the nil value.
@@ -204,7 +201,9 @@ func (x *operand) isNil() bool {
 // assignableTo reports whether x is assignable to a variable of type T.
 // If the result is false and a non-nil reason is provided, it may be set
 // to a more detailed explanation of the failure (result != "").
-func (x *operand) assignableTo(conf *Config, T Type, reason *string) bool {
+// The check parameter may be nil if assignableTo is invoked through
+// an exported API call, i.e., when all methods have been type-checked.
+func (x *operand) assignableTo(check *Checker, T Type, reason *string) bool {
 	if x.mode == invalid || T == Typ[Invalid] {
 		return true // avoid spurious errors
 	}
@@ -229,7 +228,7 @@ func (x *operand) assignableTo(conf *Config, T Type, reason *string) bool {
 				return true
 			}
 			if x.mode == constant_ {
-				return representableConst(x.val, conf, t.kind, nil)
+				return representableConst(x.val, check, t, nil)
 			}
 			// The result of a comparison is an untyped boolean,
 			// but may not be a constant.
@@ -252,7 +251,7 @@ func (x *operand) assignableTo(conf *Config, T Type, reason *string) bool {
 
 	// T is an interface type and x implements T
 	if Ti, ok := Tu.(*Interface); ok {
-		if m, wrongType := MissingMethod(x.typ, Ti, true); m != nil /* Implements(x.typ, Ti) */ {
+		if m, wrongType := check.missingMethod(x.typ, Ti, true); m != nil /* Implements(x.typ, Ti) */ {
 			if reason != nil {
 				if wrongType {
 					*reason = "wrong type for method " + m.Name()
@@ -275,12 +274,4 @@ func (x *operand) assignableTo(conf *Config, T Type, reason *string) bool {
 	}
 
 	return false
-}
-
-// isInteger reports whether x is value of integer type
-// or an untyped constant representable as an integer.
-func (x *operand) isInteger() bool {
-	return x.mode == invalid ||
-		isInteger(x.typ) ||
-		isUntyped(x.typ) && x.mode == constant_ && representableConst(x.val, nil, UntypedInt, nil) // no *Config required for UntypedInt
 }

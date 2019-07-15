@@ -1,4 +1,4 @@
-// Copyright 2014 The Go Authors.  All rights reserved.
+// Copyright 2014 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -6,18 +6,87 @@ package trace_test
 
 import (
 	"bytes"
+	"flag"
+	"internal/race"
 	"internal/trace"
 	"io"
+	"io/ioutil"
 	"net"
 	"os"
 	"runtime"
 	. "runtime/trace"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 )
 
+var (
+	saveTraces = flag.Bool("savetraces", false, "save traces collected by tests")
+)
+
+// TestEventBatch tests Flush calls that happen during Start
+// don't produce corrupted traces.
+func TestEventBatch(t *testing.T) {
+	if race.Enabled {
+		t.Skip("skipping in race mode")
+	}
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
+	if testing.Short() {
+		t.Skip("skipping in short mode")
+	}
+	// During Start, bunch of records are written to reflect the current
+	// snapshot of the program, including state of each goroutines.
+	// And some string constants are written to the trace to aid trace
+	// parsing. This test checks Flush of the buffer occurred during
+	// this process doesn't cause corrupted traces.
+	// When a Flush is called during Start is complicated
+	// so we test with a range of number of goroutines hoping that one
+	// of them triggers Flush.
+	// This range was chosen to fill up a ~64KB buffer with traceEvGoCreate
+	// and traceEvGoWaiting events (12~13bytes per goroutine).
+	for g := 4950; g < 5050; g++ {
+		n := g
+		t.Run("G="+strconv.Itoa(n), func(t *testing.T) {
+			var wg sync.WaitGroup
+			wg.Add(n)
+
+			in := make(chan bool, 1000)
+			for i := 0; i < n; i++ {
+				go func() {
+					<-in
+					wg.Done()
+				}()
+			}
+			buf := new(bytes.Buffer)
+			if err := Start(buf); err != nil {
+				t.Fatalf("failed to start tracing: %v", err)
+			}
+
+			for i := 0; i < n; i++ {
+				in <- true
+			}
+			wg.Wait()
+			Stop()
+
+			_, err := trace.Parse(buf, "")
+			if err == trace.ErrTimeOrder {
+				t.Skipf("skipping trace: %v", err)
+			}
+
+			if err != nil {
+				t.Fatalf("failed to parse trace: %v", err)
+			}
+		})
+	}
+}
+
 func TestTraceStartStop(t *testing.T) {
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
 	buf := new(bytes.Buffer)
 	if err := Start(buf); err != nil {
 		t.Fatalf("failed to start tracing: %v", err)
@@ -31,9 +100,13 @@ func TestTraceStartStop(t *testing.T) {
 	if size != buf.Len() {
 		t.Fatalf("trace writes after stop: %v -> %v", size, buf.Len())
 	}
+	saveTrace(t, buf, "TestTraceStartStop")
 }
 
 func TestTraceDoubleStart(t *testing.T) {
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
 	Stop()
 	buf := new(bytes.Buffer)
 	if err := Start(buf); err != nil {
@@ -47,12 +120,16 @@ func TestTraceDoubleStart(t *testing.T) {
 }
 
 func TestTrace(t *testing.T) {
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
 	buf := new(bytes.Buffer)
 	if err := Start(buf); err != nil {
 		t.Fatalf("failed to start tracing: %v", err)
 	}
 	Stop()
-	_, err := trace.Parse(buf)
+	saveTrace(t, buf, "TestTrace")
+	_, err := trace.Parse(buf, "")
 	if err == trace.ErrTimeOrder {
 		t.Skipf("skipping trace: %v", err)
 	}
@@ -61,24 +138,58 @@ func TestTrace(t *testing.T) {
 	}
 }
 
-func parseTrace(t *testing.T, r io.Reader) ([]*trace.Event, map[uint64]*trace.GDesc, error) {
-	events, err := trace.Parse(r)
+func parseTrace(t *testing.T, r io.Reader) ([]*trace.Event, map[uint64]*trace.GDesc) {
+	res, err := trace.Parse(r, "")
 	if err == trace.ErrTimeOrder {
 		t.Skipf("skipping trace: %v", err)
 	}
 	if err != nil {
-		return nil, nil, err
+		t.Fatalf("failed to parse trace: %v", err)
 	}
-	gs := trace.GoroutineStats(events)
+	gs := trace.GoroutineStats(res.Events)
 	for goid := range gs {
 		// We don't do any particular checks on the result at the moment.
 		// But still check that RelatedGoroutines does not crash, hang, etc.
-		_ = trace.RelatedGoroutines(events, goid)
+		_ = trace.RelatedGoroutines(res.Events, goid)
 	}
-	return events, gs, nil
+	return res.Events, gs
+}
+
+func testBrokenTimestamps(t *testing.T, data []byte) {
+	// On some processors cputicks (used to generate trace timestamps)
+	// produce non-monotonic timestamps. It is important that the parser
+	// distinguishes logically inconsistent traces (e.g. missing, excessive
+	// or misordered events) from broken timestamps. The former is a bug
+	// in tracer, the latter is a machine issue.
+	// So now that we have a consistent trace, test that (1) parser does
+	// not return a logical error in case of broken timestamps
+	// and (2) broken timestamps are eventually detected and reported.
+	trace.BreakTimestampsForTesting = true
+	defer func() {
+		trace.BreakTimestampsForTesting = false
+	}()
+	for i := 0; i < 1e4; i++ {
+		_, err := trace.Parse(bytes.NewReader(data), "")
+		if err == trace.ErrTimeOrder {
+			return
+		}
+		if err != nil {
+			t.Fatalf("failed to parse trace: %v", err)
+		}
+	}
 }
 
 func TestTraceStress(t *testing.T) {
+	if runtime.GOOS == "js" {
+		t.Skip("no os.Pipe on js")
+	}
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
+	if testing.Short() {
+		t.Skip("skipping in -short mode")
+	}
+
 	var wg sync.WaitGroup
 	done := make(chan bool)
 
@@ -130,7 +241,7 @@ func TestTraceStress(t *testing.T) {
 	runtime.GC()
 	// Trigger GC from malloc.
 	n := int(1e3)
-	if runtime.GOOS == "openbsd" && runtime.GOARCH == "arm" {
+	if isMemoryConstrained() {
 		// Reduce allocation to avoid running out of
 		// memory on the builder - see issue/12032.
 		n = 512
@@ -209,15 +320,36 @@ func TestTraceStress(t *testing.T) {
 	runtime.GOMAXPROCS(procs)
 
 	Stop()
-	_, _, err = parseTrace(t, buf)
-	if err != nil {
-		t.Fatalf("failed to parse trace: %v", err)
+	saveTrace(t, buf, "TestTraceStress")
+	trace := buf.Bytes()
+	parseTrace(t, buf)
+	testBrokenTimestamps(t, trace)
+}
+
+// isMemoryConstrained reports whether the current machine is likely
+// to be memory constrained.
+// This was originally for the openbsd/arm builder (Issue 12032).
+// TODO: move this to testenv? Make this look at memory? Look at GO_BUILDER_NAME?
+func isMemoryConstrained() bool {
+	if runtime.GOOS == "plan9" {
+		return true
 	}
+	switch runtime.GOARCH {
+	case "arm", "mips", "mipsle":
+		return true
+	}
+	return false
 }
 
 // Do a bunch of various stuff (timers, GC, network, etc) in a separate goroutine.
 // And concurrently with all that start/stop trace 3 times.
 func TestTraceStressStartStop(t *testing.T) {
+	if runtime.GOOS == "js" {
+		t.Skip("no os.Pipe on js")
+	}
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
 	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(8))
 	outerDone := make(chan bool)
 
@@ -237,7 +369,8 @@ func TestTraceStressStartStop(t *testing.T) {
 
 		rp, wp, err := os.Pipe()
 		if err != nil {
-			t.Fatalf("failed to create pipe: %v", err)
+			t.Errorf("failed to create pipe: %v", err)
+			return
 		}
 		defer func() {
 			rp.Close()
@@ -267,9 +400,9 @@ func TestTraceStressStartStop(t *testing.T) {
 		runtime.GC()
 		// Trigger GC from malloc.
 		n := int(1e3)
-		if runtime.GOOS == "openbsd" && runtime.GOARCH == "arm" {
+		if isMemoryConstrained() {
 			// Reduce allocation to avoid running out of
-			// memory on the builder - see issue/12032.
+			// memory on the builder.
 			n = 512
 		}
 		for i := 0; i < n; i++ {
@@ -313,7 +446,8 @@ func TestTraceStressStartStop(t *testing.T) {
 		// A bit of network.
 		ln, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatalf("listen failed: %v", err)
+			t.Errorf("listen failed: %v", err)
+			return
 		}
 		defer ln.Close()
 		go func() {
@@ -328,7 +462,8 @@ func TestTraceStressStartStop(t *testing.T) {
 		}()
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
-			t.Fatalf("dial failed: %v", err)
+			t.Errorf("dial failed: %v", err)
+			return
 		}
 		var tmp [1]byte
 		c.Read(tmp[:])
@@ -353,14 +488,18 @@ func TestTraceStressStartStop(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 		Stop()
-		if _, _, err := parseTrace(t, buf); err != nil {
-			t.Fatalf("failed to parse trace: %v", err)
-		}
+		saveTrace(t, buf, "TestTraceStressStartStop")
+		trace := buf.Bytes()
+		parseTrace(t, buf)
+		testBrokenTimestamps(t, trace)
 	}
 	<-outerDone
 }
 
 func TestTraceFutileWakeup(t *testing.T) {
+	if IsEnabled() {
+		t.Skip("skipping because -test.trace is set")
+	}
 	buf := new(bytes.Buffer)
 	if err := Start(buf); err != nil {
 		t.Fatalf("failed to start tracing: %v", err)
@@ -413,10 +552,8 @@ func TestTraceFutileWakeup(t *testing.T) {
 	done.Wait()
 
 	Stop()
-	events, _, err := parseTrace(t, buf)
-	if err != nil {
-		t.Fatalf("failed to parse trace: %v", err)
-	}
+	saveTrace(t, buf, "TestTraceFutileWakeup")
+	events, _ := parseTrace(t, buf)
 	// Check that (1) trace does not contain EvFutileWakeup events and
 	// (2) there are no consecutive EvGoBlock/EvGCStart/EvGoBlock events
 	// (we call runtime.Gosched between all operations, so these would be futile wakeups).
@@ -442,5 +579,14 @@ func TestTraceFutileWakeup(t *testing.T) {
 		default:
 			delete(gs, ev.G)
 		}
+	}
+}
+
+func saveTrace(t *testing.T, buf *bytes.Buffer, name string) {
+	if !*saveTraces {
+		return
+	}
+	if err := ioutil.WriteFile(name+".trace", buf.Bytes(), 0600); err != nil {
+		t.Errorf("failed to write trace file: %s", err)
 	}
 }

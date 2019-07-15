@@ -2,11 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin dragonfly freebsd linux netbsd openbsd solaris
+// +build aix darwin dragonfly freebsd linux netbsd openbsd solaris
 
 package syscall
 
 import (
+	"internal/oserror"
+	"internal/race"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -19,15 +21,24 @@ var (
 )
 
 const (
-	darwin64Bit    = runtime.GOOS == "darwin" && sizeofPtr == 8
-	dragonfly64Bit = runtime.GOOS == "dragonfly" && sizeofPtr == 8
-	netbsd32Bit    = runtime.GOOS == "netbsd" && sizeofPtr == 4
+	darwin64Bit = runtime.GOOS == "darwin" && sizeofPtr == 8
+	netbsd32Bit = runtime.GOOS == "netbsd" && sizeofPtr == 4
 )
 
 func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)
 func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
 func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err Errno)
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err Errno)
+
+// clen returns the index of the first NULL byte in n or len(n) if n contains no NULL byte.
+func clen(n []byte) int {
+	for i := 0; i < len(n); i++ {
+		if n[i] == 0 {
+			return i
+		}
+	}
+	return len(n)
+}
 
 // Mmap manager, for use by operating system-specific implementations.
 
@@ -90,7 +101,7 @@ func (m *mmapper) Munmap(data []byte) (err error) {
 }
 
 // An Errno is an unsigned number describing an error condition.
-// It implements the error interface.  The zero Errno is by convention
+// It implements the error interface. The zero Errno is by convention
 // a non-error, so code to convert from Errno to error should use:
 //	err = nil
 //	if errno != 0 {
@@ -108,8 +119,24 @@ func (e Errno) Error() string {
 	return "errno " + itoa(int(e))
 }
 
+func (e Errno) Is(target error) bool {
+	switch target {
+	case oserror.ErrTemporary:
+		return e.Temporary()
+	case oserror.ErrTimeout:
+		return e.Timeout()
+	case oserror.ErrPermission:
+		return e == EACCES || e == EPERM
+	case oserror.ErrExist:
+		return e == EEXIST || e == ENOTEMPTY
+	case oserror.ErrNotExist:
+		return e == ENOENT
+	}
+	return false
+}
+
 func (e Errno) Temporary() bool {
-	return e == EINTR || e == EMFILE || e == ECONNRESET || e == ECONNABORTED || e.Timeout()
+	return e == EINTR || e == EMFILE || e.Timeout()
 }
 
 func (e Errno) Timeout() bool {
@@ -158,12 +185,12 @@ func (s Signal) String() string {
 
 func Read(fd int, p []byte) (n int, err error) {
 	n, err = read(fd, p)
-	if raceenabled {
+	if race.Enabled {
 		if n > 0 {
-			raceWriteRange(unsafe.Pointer(&p[0]), n)
+			race.WriteRange(unsafe.Pointer(&p[0]), n)
 		}
 		if err == nil {
-			raceAcquire(unsafe.Pointer(&ioSync))
+			race.Acquire(unsafe.Pointer(&ioSync))
 		}
 	}
 	if msanenabled && n > 0 {
@@ -173,12 +200,12 @@ func Read(fd int, p []byte) (n int, err error) {
 }
 
 func Write(fd int, p []byte) (n int, err error) {
-	if raceenabled {
-		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	if race.Enabled {
+		race.ReleaseMerge(unsafe.Pointer(&ioSync))
 	}
 	n, err = write(fd, p)
-	if raceenabled && n > 0 {
-		raceReadRange(unsafe.Pointer(&p[0]), n)
+	if race.Enabled && n > 0 {
+		race.ReadRange(unsafe.Pointer(&p[0]), n)
 	}
 	if msanenabled && n > 0 {
 		msanRead(unsafe.Pointer(&p[0]), n)
@@ -294,7 +321,11 @@ func SetsockoptLinger(fd, level, opt int, l *Linger) (err error) {
 }
 
 func SetsockoptString(fd, level, opt int, s string) (err error) {
-	return setsockopt(fd, level, opt, unsafe.Pointer(&[]byte(s)[0]), uintptr(len(s)))
+	var p unsafe.Pointer
+	if len(s) > 0 {
+		p = unsafe.Pointer(&[]byte(s)[0])
+	}
+	return setsockopt(fd, level, opt, p, uintptr(len(s)))
 }
 
 func SetsockoptTimeval(fd, level, opt int, tv *Timeval) (err error) {
@@ -320,8 +351,8 @@ func Socketpair(domain, typ, proto int) (fd [2]int, err error) {
 }
 
 func Sendfile(outfd int, infd int, offset *int64, count int) (written int, err error) {
-	if raceenabled {
-		raceReleaseMerge(unsafe.Pointer(&ioSync))
+	if race.Enabled {
+		race.ReleaseMerge(unsafe.Pointer(&ioSync))
 	}
 	return sendfile(outfd, infd, offset, count)
 }

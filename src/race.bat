@@ -18,7 +18,7 @@ goto end
 set GOROOT=%CD%\..
 call make.bat --dist-tool >NUL
 if errorlevel 1 goto fail
-.\cmd\dist\dist env -w -p >env.bat
+.\cmd\dist\dist.exe env -w -p >env.bat
 if errorlevel 1 goto fail
 call env.bat
 del env.bat
@@ -34,7 +34,7 @@ echo # go install -race std
 go install -race std
 if errorlevel 1 goto fail
 
-go tool dist test -no-rebuild -race
+go tool dist test -race
 
 if errorlevel 1 goto fail
 goto succ

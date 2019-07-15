@@ -1,4 +1,4 @@
-// Copyright 2010 The Go Authors.  All rights reserved.
+// Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -8,6 +8,9 @@ import "bytes"
 
 // Compact appends to dst the JSON-encoded src with
 // insignificant space characters elided.
+// Like Marshal, Compact applies HTMLEscape to any
+// string literals so that the JSON will be safe to embed
+// inside HTML <script> tags.
 func Compact(dst *bytes.Buffer, src []byte) error {
 	return compact(dst, src, false)
 }
@@ -70,8 +73,12 @@ func newline(dst *bytes.Buffer, prefix, indent string, depth int) {
 // indented line beginning with prefix followed by one or more
 // copies of indent according to the indentation nesting.
 // The data appended to dst does not begin with the prefix nor
-// any indentation, and has no trailing newline, to make it
-// easier to embed inside other formatted JSON data.
+// any indentation, to make it easier to embed inside other formatted JSON data.
+// Although leading space characters (space, tab, carriage return, newline)
+// at the beginning of src are dropped, trailing space characters
+// at the end of src are preserved and copied to dst.
+// For example, if src has no trailing spaces, neither will dst;
+// if src ends in a trailing newline, so will dst.
 func Indent(dst *bytes.Buffer, src []byte, prefix, indent string) error {
 	origLen := dst.Len()
 	var scan scanner

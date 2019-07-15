@@ -7,7 +7,7 @@
 //	Portions Copyright © 2004,2006 Bruce Ellis
 //	Portions Copyright © 2005-2007 C H Forsyth (forsyth@terzarima.net)
 //	Revisions Copyright © 2000-2008 Lucent Technologies Inc. and others
-//	Portions Copyright © 2009 The Go Authors.  All rights reserved.
+//	Portions Copyright © 2009 The Go Authors. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -35,11 +35,11 @@ import (
 )
 
 func init() {
-	obj.RegisterRegister(obj.RBaseMIPS64, REG_FCR0+1024, Rconv)
-	obj.RegisterOpcode(obj.ABaseMIPS64, Anames)
+	obj.RegisterRegister(obj.RBaseMIPS, REG_LAST+1, rconv)
+	obj.RegisterOpcode(obj.ABaseMIPS, Anames)
 }
 
-func Rconv(r int) string {
+func rconv(r int) string {
 	if r == 0 {
 		return "NONE"
 	}
@@ -66,7 +66,7 @@ func Rconv(r int) string {
 		return "LO"
 	}
 
-	return fmt.Sprintf("Rgok(%d)", r-obj.RBaseMIPS64)
+	return fmt.Sprintf("Rgok(%d)", r-obj.RBaseMIPS)
 }
 
 func DRconv(a int) string {

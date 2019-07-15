@@ -7,16 +7,18 @@
 # We are testing cgo -godefs, which translates Go files that use
 # import "C" into Go files with Go definitions of types defined in the
 # import "C" block.  Add more tests here.
-FILE_PREFIXES="anonunion issue8478"
+FILE_PREFIXES="anonunion issue8478 fieldtypedef"
+
+cd testdata
 
 RM=
 for FP in $FILE_PREFIXES
 do
-  go tool cgo -godefs ${FP}.go > ${FP}_defs.go
+  go tool cgo -godefs -srcdir . ${FP}.go > ${FP}_defs.go
   RM="${RM} ${FP}_defs.go"
 done
 
-go build . && ./testgodefs
+go build -o testgodefs . && ./testgodefs
 EXIT=$?
 rm -rf _obj testgodefs ${RM}
 exit $EXIT

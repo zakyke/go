@@ -1,4 +1,4 @@
-// Copyright 2012 The Go Authors.  All rights reserved.
+// Copyright 2012 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -27,6 +27,31 @@ func (ti *testInterface) setBroadcast(suffix int) error {
 	ti.teardownCmds = append(ti.teardownCmds, &exec.Cmd{
 		Path: xname,
 		Args: []string{"ip", "address", "del", ti.local, "peer", ti.remote, "dev", ti.name},
+	})
+	ti.teardownCmds = append(ti.teardownCmds, &exec.Cmd{
+		Path: xname,
+		Args: []string{"ip", "link", "delete", ti.name, "type", "dummy"},
+	})
+	return nil
+}
+
+func (ti *testInterface) setLinkLocal(suffix int) error {
+	ti.name = fmt.Sprintf("gotest%d", suffix)
+	xname, err := exec.LookPath("ip")
+	if err != nil {
+		return err
+	}
+	ti.setupCmds = append(ti.setupCmds, &exec.Cmd{
+		Path: xname,
+		Args: []string{"ip", "link", "add", ti.name, "type", "dummy"},
+	})
+	ti.setupCmds = append(ti.setupCmds, &exec.Cmd{
+		Path: xname,
+		Args: []string{"ip", "address", "add", ti.local, "dev", ti.name},
+	})
+	ti.teardownCmds = append(ti.teardownCmds, &exec.Cmd{
+		Path: xname,
+		Args: []string{"ip", "address", "del", ti.local, "dev", ti.name},
 	})
 	ti.teardownCmds = append(ti.teardownCmds, &exec.Cmd{
 		Path: xname,

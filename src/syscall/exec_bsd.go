@@ -2,12 +2,11 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin dragonfly freebsd netbsd openbsd
+// +build dragonfly freebsd netbsd openbsd
 
 package syscall
 
 import (
-	"runtime"
 	"unsafe"
 )
 
@@ -27,12 +26,13 @@ type SysProcAttr struct {
 // Implemented in runtime package.
 func runtime_BeforeFork()
 func runtime_AfterFork()
+func runtime_AfterForkInChild()
 
 // Fork, dup fd onto 0..len(fd), and exec(argv0, argvv, envv) in child.
 // If a dup or exec fails, write the errno error to pipe.
 // (Pipe is close-on-exec so if exec succeeds, it will be closed.)
 // In the child, this function must not acquire any locks, because
-// they might have been locked at the time of the fork.  This means
+// they might have been locked at the time of the fork. This means
 // no rescheduling, no malloc calls, and no new stack segments.
 // For the same reason compiler does not race instrument it.
 // The calls to RawSyscall are okay because they are assembly
@@ -42,7 +42,7 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 	// Declare all variables at top in case any
 	// declarations require heap allocation (e.g., err1).
 	var (
-		r1, r2 uintptr
+		r1     uintptr
 		err1   Errno
 		nextfd int
 		i      int
@@ -61,23 +61,13 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 	}
 	nextfd++
 
-	darwin := runtime.GOOS == "darwin"
-
 	// About to call fork.
 	// No more allocation or calls of non-assembly functions.
 	runtime_BeforeFork()
-	r1, r2, err1 = RawSyscall(SYS_FORK, 0, 0, 0)
+	r1, _, err1 = RawSyscall(SYS_FORK, 0, 0, 0)
 	if err1 != 0 {
 		runtime_AfterFork()
 		return 0, err1
-	}
-
-	// On Darwin:
-	//	r1 = child pid in both parent and child.
-	//	r2 = 0 in parent, 1 in child.
-	// Convert to normal Unix r1 = 0 in child.
-	if darwin && r2 == 1 {
-		r1 = 0
 	}
 
 	if r1 != 0 {
@@ -87,6 +77,8 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 	}
 
 	// Fork succeeded, now in child.
+
+	runtime_AfterForkInChild()
 
 	// Enable tracing if requested.
 	if sys.Ptrace {
@@ -146,9 +138,11 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 		if ngroups > 0 {
 			groups = uintptr(unsafe.Pointer(&cred.Groups[0]))
 		}
-		_, _, err1 = RawSyscall(SYS_SETGROUPS, ngroups, groups, 0)
-		if err1 != 0 {
-			goto childerror
+		if !cred.NoSetGroups {
+			_, _, err1 = RawSyscall(SYS_SETGROUPS, ngroups, groups, 0)
+			if err1 != 0 {
+				goto childerror
+			}
 		}
 		_, _, err1 = RawSyscall(SYS_SETGID, uintptr(cred.Gid), 0, 0)
 		if err1 != 0 {
@@ -181,6 +175,9 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 	}
 	for i = 0; i < len(fd); i++ {
 		if fd[i] >= 0 && fd[i] < int(i) {
+			if nextfd == pipe { // don't stomp on pipe
+				nextfd++
+			}
 			_, _, err1 = RawSyscall(SYS_DUP2, uintptr(fd[i]), uintptr(nextfd), 0)
 			if err1 != 0 {
 				goto childerror
@@ -188,9 +185,6 @@ func forkAndExecInChild(argv0 *byte, argv, envv []*byte, chroot, dir *byte, attr
 			RawSyscall(SYS_FCNTL, uintptr(nextfd), F_SETFD, FD_CLOEXEC)
 			fd[i] = nextfd
 			nextfd++
-			if nextfd == pipe { // don't stomp on pipe
-				nextfd++
-			}
 		}
 	}
 
@@ -253,18 +247,4 @@ childerror:
 	for {
 		RawSyscall(SYS_EXIT, 253, 0, 0)
 	}
-}
-
-// Try to open a pipe with O_CLOEXEC set on both file descriptors.
-func forkExecPipe(p []int) error {
-	err := Pipe(p)
-	if err != nil {
-		return err
-	}
-	_, err = fcntl(p[0], F_SETFD, FD_CLOEXEC)
-	if err != nil {
-		return err
-	}
-	_, err = fcntl(p[1], F_SETFD, FD_CLOEXEC)
-	return err
 }

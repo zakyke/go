@@ -71,70 +71,6 @@ GLOBL bswapMask<>(SB), (NOPTR+RODATA), $16
 GLOBL gcmPoly<>(SB), (NOPTR+RODATA), $16
 GLOBL andMask<>(SB), (NOPTR+RODATA), $240
 
-// func hasGCMAsm() bool
-// returns whether AES-NI AND CLMUL-NI are supported
-TEXT ·hasGCMAsm(SB),NOSPLIT,$0
-	XORQ AX, AX
-	INCL AX
-	CPUID
-	MOVQ CX, DX
-	SHRQ $25, CX
-	SHRQ $1, DX
-	ANDQ DX, CX
-	ANDQ $1, CX
-	MOVB CX, ret+0(FP)
-	RET
-
-// func aesEncBlock(dst, src *[16]byte, ks []uint32)
-TEXT ·aesEncBlock(SB),NOSPLIT,$0
-	MOVQ dst+0(FP), DI
-	MOVQ src+8(FP), SI
-	MOVQ ks+16(FP), DX
-	MOVQ ks+24(FP), CX
-
-	SHRQ $2, CX
-	DECQ CX
-
-	MOVOU (SI), X0
-	MOVOU (16*0)(DX), X1
-	PXOR X1, X0
-	MOVOU (16*1)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*2)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*3)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*4)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*5)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*6)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*7)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*8)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*9)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*10)(DX), X1
-	CMPQ CX, $12
-	JB encLast
-	AESENC X1, X0
-	MOVOU (16*11)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*12)(DX), X1
-	JE encLast
-	AESENC X1, X0
-	MOVOU (16*13)(DX), X1
-	AESENC X1, X0
-	MOVOU (16*14)(DX), X1
-
-encLast:
-	AESENCLAST X1, X0
-	MOVOU X0, (DI)
-
-	RET
-
 // func gcmAesFinish(productTable *[256]byte, tagMask, T *[16]byte, pLen, dLen uint64)
 TEXT ·gcmAesFinish(SB),NOSPLIT,$0
 #define pTbl DI
@@ -211,8 +147,8 @@ TEXT ·gcmAesInit(SB),NOSPLIT,$0
 #define NR DX
 
 	MOVQ productTable+0(FP), dst
-	MOVQ ks+8(FP), KS
-	MOVQ ks+16(FP), NR
+	MOVQ ks_base+8(FP), KS
+	MOVQ ks_len+16(FP), NR
 
 	SHRQ $2, NR
 	DECQ NR
@@ -324,30 +260,104 @@ TEXT ·gcmAesData(SB),NOSPLIT,$0
 #define tPtr CX
 #define autLen DX
 
+#define reduceRound(a) 	MOVOU POLY, T0;	PCLMULQDQ $0x01, a, T0; PSHUFD $78, a, a; PXOR T0, a
+#define mulRoundAAD(X ,i) \
+	MOVOU (16*(i*2))(pTbl), T1;\
+	MOVOU T1, T2;\
+	PCLMULQDQ $0x00, X, T1;\
+	PXOR T1, ACC0;\
+	PCLMULQDQ $0x11, X, T2;\
+	PXOR T2, ACC1;\
+	PSHUFD $78, X, T1;\
+	PXOR T1, X;\
+	MOVOU (16*(i*2+1))(pTbl), T1;\
+	PCLMULQDQ $0x00, X, T1;\
+	PXOR T1, ACCM
+
 	MOVQ productTable+0(FP), pTbl
-	MOVQ data+8(FP), aut
-	MOVQ data+16(FP), autLen
+	MOVQ data_base+8(FP), aut
+	MOVQ data_len+16(FP), autLen
 	MOVQ T+32(FP), tPtr
 
 	PXOR ACC0, ACC0
 	MOVOU bswapMask<>(SB), BSWAP
 	MOVOU gcmPoly<>(SB), POLY
 
-	MOVOU (16*14)(pTbl), T1
-	MOVOU (16*15)(pTbl), T2
-
 	TESTQ autLen, autLen
 	JEQ dataBail
 
 	CMPQ autLen, $13	// optimize the TLS case
-	JNE dataSinglesLoop
+	JE dataTLS
+	CMPQ autLen, $128
+	JB startSinglesLoop
+	JMP dataOctaLoop
 
+dataTLS:
+	MOVOU (16*14)(pTbl), T1
+	MOVOU (16*15)(pTbl), T2
 	PXOR B0, B0
 	MOVQ (aut), B0
 	PINSRD $2, 8(aut), B0
-	BYTE $0x66; BYTE $0x0f; BYTE $0x3a; BYTE $0x20; BYTE $0x46; BYTE $0x0c; BYTE $0x0c  //PINSRB $12, 12(aut), B0
+	PINSRB $12, 12(aut), B0
 	XORQ autLen, autLen
 	JMP dataMul
+
+dataOctaLoop:
+		CMPQ autLen, $128
+		JB startSinglesLoop
+		SUBQ $128, autLen
+
+		MOVOU (16*0)(aut), X0
+		MOVOU (16*1)(aut), X1
+		MOVOU (16*2)(aut), X2
+		MOVOU (16*3)(aut), X3
+		MOVOU (16*4)(aut), X4
+		MOVOU (16*5)(aut), X5
+		MOVOU (16*6)(aut), X6
+		MOVOU (16*7)(aut), X7
+		LEAQ (16*8)(aut), aut
+		PSHUFB BSWAP, X0
+		PSHUFB BSWAP, X1
+		PSHUFB BSWAP, X2
+		PSHUFB BSWAP, X3
+		PSHUFB BSWAP, X4
+		PSHUFB BSWAP, X5
+		PSHUFB BSWAP, X6
+		PSHUFB BSWAP, X7
+		PXOR ACC0, X0
+
+		MOVOU (16*0)(pTbl), ACC0
+		MOVOU (16*1)(pTbl), ACCM
+		MOVOU ACC0, ACC1
+		PSHUFD $78, X0, T1
+		PXOR X0, T1
+		PCLMULQDQ $0x00, X0, ACC0
+		PCLMULQDQ $0x11, X0, ACC1
+		PCLMULQDQ $0x00, T1, ACCM
+
+		mulRoundAAD(X1, 1)
+		mulRoundAAD(X2, 2)
+		mulRoundAAD(X3, 3)
+		mulRoundAAD(X4, 4)
+		mulRoundAAD(X5, 5)
+		mulRoundAAD(X6, 6)
+		mulRoundAAD(X7, 7)
+
+		PXOR ACC0, ACCM
+		PXOR ACC1, ACCM
+		MOVOU ACCM, T0
+		PSRLDQ $8, ACCM
+		PSLLDQ $8, T0
+		PXOR ACCM, ACC1
+		PXOR T0, ACC0
+		reduceRound(ACC0)
+		reduceRound(ACC0)
+		PXOR ACC1, ACC0
+	JMP dataOctaLoop
+
+startSinglesLoop:
+	MOVOU (16*14)(pTbl), T1
+	MOVOU (16*15)(pTbl), T2
 
 dataSinglesLoop:
 
@@ -404,7 +414,7 @@ dataEnd:
 dataLoadLoop:
 
 		PSLLDQ $1, B0
-		BYTE $0x66; BYTE $0x0f; BYTE $0x3a; BYTE $0x20; BYTE $0x06; BYTE $0x00   //PINSRB $0, (aut), B0
+		PINSRB $0, (aut), B0
 
 		LEAQ -1(aut), aut
 		DECQ autLen
@@ -421,7 +431,7 @@ dataBail:
 #undef autLen
 
 // func gcmAesEnc(productTable *[256]byte, dst, src []byte, ctr, T *[16]byte, ks []uint32)
-TEXT ·gcmAesEnc(SB),0,$256-144
+TEXT ·gcmAesEnc(SB),0,$256-96
 #define pTbl DI
 #define ctx DX
 #define ctrPtr CX
@@ -438,7 +448,6 @@ TEXT ·gcmAesEnc(SB),0,$256-144
 #define aesRnd(k) AESENC k, B0; AESENC k, B1; AESENC k, B2; AESENC k, B3; AESENC k, B4; AESENC k, B5; AESENC k, B6; AESENC k, B7
 #define aesRound(i) MOVOU (16*i)(ks), T0;AESENC T0, B0; AESENC T0, B1; AESENC T0, B2; AESENC T0, B3; AESENC T0, B4; AESENC T0, B5; AESENC T0, B6; AESENC T0, B7
 #define aesRndLast(k) AESENCLAST k, B0; AESENCLAST k, B1; AESENCLAST k, B2; AESENCLAST k, B3; AESENCLAST k, B4; AESENCLAST k, B5; AESENCLAST k, B6; AESENCLAST k, B7
-#define reduceRound(a) 	MOVOU POLY, T0;	PCLMULQDQ $0x01, a, T0; PSHUFD $78, a, a; PXOR T0, a
 #define combinedRound(i) \
 	MOVOU (16*i)(ks), T0;\
 	AESENC T0, B0;\
@@ -477,12 +486,12 @@ TEXT ·gcmAesEnc(SB),0,$256-144
 
 	MOVQ productTable+0(FP), pTbl
 	MOVQ dst+8(FP), ctx
-	MOVQ src+32(FP), ptx
-	MOVQ src+40(FP), ptxLen
+	MOVQ src_base+32(FP), ptx
+	MOVQ src_len+40(FP), ptxLen
 	MOVQ ctr+56(FP), ctrPtr
 	MOVQ T+64(FP), tPtr
-	MOVQ KS+72(FP), ks
-	MOVQ nr+80(FP), NR
+	MOVQ ks_base+72(FP), ks
+	MOVQ ks_len+80(FP), NR
 
 	SHRQ $2, NR
 	DECQ NR
@@ -892,7 +901,7 @@ encLast4:
 	PXOR B0, B0
 ptxLoadLoop:
 		PSLLDQ $1, B0
-		BYTE $0x66; BYTE $0x0f; BYTE $0x3a; BYTE $0x20; BYTE $0x06; BYTE $0x00  //PINSRB $0, (ptx), B0
+		PINSRB $0, (ptx), B0
 		LEAQ -1(ptx), ptx
 		DECQ ptxLen
 	JNE ptxLoadLoop
@@ -932,7 +941,7 @@ gcmAesEncDone:
 #undef increment
 
 // func gcmAesDec(productTable *[256]byte, dst, src []byte, ctr, T *[16]byte, ks []uint32)
-TEXT ·gcmAesDec(SB),0,$128-144
+TEXT ·gcmAesDec(SB),0,$128-96
 #define increment(i) ADDL $1, aluCTR; MOVL aluCTR, aluTMP; XORL aluK, aluTMP; BSWAPL aluTMP; MOVL aluTMP, (3*4 + i*16)(SP)
 #define combinedDecRound(i) \
 	MOVOU (16*i)(ks), T0;\
@@ -960,12 +969,12 @@ TEXT ·gcmAesDec(SB),0,$128-144
 
 	MOVQ productTable+0(FP), pTbl
 	MOVQ dst+8(FP), ptx
-	MOVQ src+32(FP), ctx
-	MOVQ src+40(FP), ptxLen
+	MOVQ src_base+32(FP), ctx
+	MOVQ src_len+40(FP), ptxLen
 	MOVQ ctr+56(FP), ctrPtr
 	MOVQ T+64(FP), tPtr
-	MOVQ KS+72(FP), ks
-	MOVQ nr+80(FP), NR
+	MOVQ ks_base+72(FP), ks
+	MOVQ ks_len+80(FP), NR
 
 	SHRQ $2, NR
 	DECQ NR
@@ -1264,7 +1273,7 @@ decLast3:
 	PXOR T1, B0
 
 ptxStoreLoop:
-		BYTE $0x66; BYTE $0x0f; BYTE $0x3a; BYTE $0x14; BYTE $0x06; BYTE $0x00  // PEXTRB $0, B0, (ptx)
+		PEXTRB $0, B0, (ptx)
 		PSRLDQ $1, B0
 		LEAQ 1(ptx), ptx
 		DECQ ptxLen

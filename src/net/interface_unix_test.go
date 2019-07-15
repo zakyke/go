@@ -1,4 +1,4 @@
-// Copyright 2013 The Go Authors.  All rights reserved.
+// Copyright 2013 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -7,9 +7,11 @@
 package net
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -24,8 +26,8 @@ type testInterface struct {
 
 func (ti *testInterface) setup() error {
 	for _, cmd := range ti.setupCmds {
-		if err := cmd.Run(); err != nil {
-			return err
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("args=%v out=%q err=%v", cmd.Args, string(out), err)
 		}
 	}
 	return nil
@@ -33,8 +35,8 @@ func (ti *testInterface) setup() error {
 
 func (ti *testInterface) teardown() error {
 	for _, cmd := range ti.teardownCmds {
-		if err := cmd.Run(); err != nil {
-			return err
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("args=%v out=%q err=%v ", cmd.Args, string(out), err)
 		}
 	}
 	return nil
@@ -51,14 +53,19 @@ func TestPointToPointInterface(t *testing.T) {
 		t.Skip("must be root")
 	}
 
+	// We suppose that using IPv4 link-local addresses doesn't
+	// harm anyone.
 	local, remote := "169.254.0.1", "169.254.0.254"
 	ip := ParseIP(remote)
 	for i := 0; i < 3; i++ {
 		ti := &testInterface{local: local, remote: remote}
 		if err := ti.setPointToPoint(5963 + i); err != nil {
-			t.Skipf("test requries external command: %v", err)
+			t.Skipf("test requires external command: %v", err)
 		}
 		if err := ti.setup(); err != nil {
+			if e := err.Error(); strings.Contains(e, "No such device") && strings.Contains(e, "gre0") {
+				t.Skip("skipping test; no gre0 device. likely running in container?")
+			}
 			t.Fatal(err)
 		} else {
 			time.Sleep(3 * time.Millisecond)
@@ -100,15 +107,17 @@ func TestInterfaceArrivalAndDeparture(t *testing.T) {
 		t.Skip("must be root")
 	}
 
+	// We suppose that using IPv4 link-local addresses and the
+	// dot1Q ID for Token Ring and FDDI doesn't harm anyone.
 	local, remote := "169.254.0.1", "169.254.0.254"
 	ip := ParseIP(remote)
-	for i := 0; i < 3; i++ {
+	for _, vid := range []int{1002, 1003, 1004, 1005} {
 		ift1, err := Interfaces()
 		if err != nil {
 			t.Fatal(err)
 		}
 		ti := &testInterface{local: local, remote: remote}
-		if err := ti.setBroadcast(5682 + i); err != nil {
+		if err := ti.setBroadcast(vid); err != nil {
 			t.Skipf("test requires external command: %v", err)
 		}
 		if err := ti.setup(); err != nil {
@@ -165,5 +174,39 @@ func TestInterfaceArrivalAndDeparture(t *testing.T) {
 			}
 			t.Fatalf("got %v; want lt %v", len(ift3), len(ift2))
 		}
+	}
+}
+
+func TestInterfaceArrivalAndDepartureZoneCache(t *testing.T) {
+	if testing.Short() {
+		t.Skip("avoid external network")
+	}
+	if os.Getuid() != 0 {
+		t.Skip("must be root")
+	}
+
+	// Ensure zoneCache is filled:
+	_, _ = Listen("tcp", "[fe80::1%nonexistant]:0")
+
+	ti := &testInterface{local: "fe80::1"}
+	if err := ti.setLinkLocal(0); err != nil {
+		t.Skipf("test requires external command: %v", err)
+	}
+	if err := ti.setup(); err != nil {
+		t.Fatal(err)
+	}
+	defer ti.teardown()
+
+	time.Sleep(3 * time.Millisecond)
+
+	// If Listen fails (on Linux with “bind: invalid argument”), zoneCache was
+	// not updated when encountering a nonexistant interface:
+	ln, err := Listen("tcp", "[fe80::1%"+ti.name+"]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln.Close()
+	if err := ti.teardown(); err != nil {
+		t.Fatal(err)
 	}
 }

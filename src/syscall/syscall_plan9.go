@@ -11,9 +11,13 @@
 
 package syscall
 
-import "unsafe"
+import (
+	"internal/oserror"
+	"unsafe"
+)
 
 const ImplementsGetwd = true
+const bitSize16 = 2
 
 // ErrorString implements Error's String method by returning itself.
 type ErrorString string
@@ -23,6 +27,45 @@ func (e ErrorString) Error() string { return string(e) }
 // NewError converts s to an ErrorString, which satisfies the Error interface.
 func NewError(s string) error { return ErrorString(s) }
 
+func (e ErrorString) Is(target error) bool {
+	switch target {
+	case oserror.ErrTemporary:
+		return e.Temporary()
+	case oserror.ErrTimeout:
+		return e.Timeout()
+	case oserror.ErrPermission:
+		return checkErrMessageContent(e, "permission denied")
+	case oserror.ErrExist:
+		return checkErrMessageContent(e, "exists", "is a directory")
+	case oserror.ErrNotExist:
+		return checkErrMessageContent(e, "does not exist", "not found",
+			"has been removed", "no parent")
+	}
+	return false
+}
+
+// checkErrMessageContent checks if err message contains one of msgs.
+func checkErrMessageContent(e ErrorString, msgs ...string) bool {
+	for _, msg := range msgs {
+		if contains(string(e), msg) {
+			return true
+		}
+	}
+	return false
+}
+
+// contains is a local version of strings.Contains. It knows len(sep) > 1.
+func contains(s, sep string) bool {
+	n := len(sep)
+	c := sep[0]
+	for i := 0; i+n <= len(s); i++ {
+		if s[i] == c && s[i:i+n] == sep {
+			return true
+		}
+	}
+	return false
+}
+
 func (e ErrorString) Temporary() bool {
 	return e == EINTR || e == EMFILE || e.Timeout()
 }
@@ -30,6 +73,8 @@ func (e ErrorString) Temporary() bool {
 func (e ErrorString) Timeout() bool {
 	return e == EBUSY || e == ETIMEDOUT
 }
+
+var emptystring string
 
 // A Note is a string describing a process note.
 // It implements the os.Signal interface.
@@ -56,6 +101,7 @@ func Syscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2 uintptr, err ErrorSt
 func RawSyscall(trap, a1, a2, a3 uintptr) (r1, r2, err uintptr)
 func RawSyscall6(trap, a1, a2, a3, a4, a5, a6 uintptr) (r1, r2, err uintptr)
 
+//go:nosplit
 func atoi(b []byte) (n uint) {
 	n = 0
 	for i := 0; i < len(b); i++ {
@@ -81,11 +127,6 @@ func errstr() string {
 	buf[len(buf)-1] = 0
 	return cstring(buf[:])
 }
-
-// Implemented in assembly to import from runtime.
-func exit(code int)
-
-func Exit(code int) { exit(code) }
 
 func readnum(path string) (uint, error) {
 	var b [12]byte
@@ -166,6 +207,20 @@ func Seek(fd int, offset int64, whence int) (newoffset int64, err error) {
 }
 
 func Mkdir(path string, mode uint32) (err error) {
+	// If path exists and is not a directory, Create will fail silently.
+	// Work around this by rejecting Mkdir if path exists.
+	statbuf := make([]byte, bitSize16)
+	// Remove any trailing slashes from path, otherwise the Stat will
+	// fail with ENOTDIR.
+	n := len(path)
+	for n > 1 && path[n-1] == '/' {
+		n--
+	}
+	_, err = Stat(path[0:n], statbuf)
+	if err == nil {
+		return EEXIST
+	}
+
 	fd, err := Create(path, O_RDONLY, DMDIR|mode)
 
 	if fd != -1 {
@@ -231,7 +286,7 @@ func Await(w *Waitmsg) (err error) {
 }
 
 func Unmount(name, old string) (err error) {
-	Fixwd()
+	fixwd(name, old)
 	oldp, err := BytePtrFromString(old)
 	if err != nil {
 		return err
@@ -250,9 +305,7 @@ func Unmount(name, old string) (err error) {
 			return err
 		}
 		r0, _, e = Syscall(SYS_UNMOUNT, uintptr(unsafe.Pointer(namep)), oldptr, 0)
-		use(unsafe.Pointer(namep))
 	}
-	use(unsafe.Pointer(oldp))
 
 	if int32(r0) == -1 {
 		err = e
@@ -304,8 +357,6 @@ func Gettimeofday(tv *Timeval) error {
 	return nil
 }
 
-func Getpagesize() int { return 0x1000 }
-
 func Getegid() (egid int) { return -1 }
 func Geteuid() (euid int) { return -1 }
 func Getgid() (gid int)   { return -1 }
@@ -317,43 +368,43 @@ func Getgroups() (gids []int, err error) {
 
 //sys	open(path string, mode int) (fd int, err error)
 func Open(path string, mode int) (fd int, err error) {
-	Fixwd()
+	fixwd(path)
 	return open(path, mode)
 }
 
 //sys	create(path string, mode int, perm uint32) (fd int, err error)
 func Create(path string, mode int, perm uint32) (fd int, err error) {
-	Fixwd()
+	fixwd(path)
 	return create(path, mode, perm)
 }
 
 //sys	remove(path string) (err error)
 func Remove(path string) error {
-	Fixwd()
+	fixwd(path)
 	return remove(path)
 }
 
 //sys	stat(path string, edir []byte) (n int, err error)
 func Stat(path string, edir []byte) (n int, err error) {
-	Fixwd()
+	fixwd(path)
 	return stat(path, edir)
 }
 
 //sys	bind(name string, old string, flag int) (err error)
 func Bind(name string, old string, flag int) (err error) {
-	Fixwd()
+	fixwd(name, old)
 	return bind(name, old, flag)
 }
 
 //sys	mount(fd int, afd int, old string, flag int, aname string) (err error)
 func Mount(fd int, afd int, old string, flag int, aname string) (err error) {
-	Fixwd()
+	fixwd(old)
 	return mount(fd, afd, old, flag, aname)
 }
 
 //sys	wstat(path string, edir []byte) (err error)
 func Wstat(path string, edir []byte) (err error) {
-	Fixwd()
+	fixwd(path)
 	return wstat(path, edir)
 }
 

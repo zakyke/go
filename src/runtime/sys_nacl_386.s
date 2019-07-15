@@ -16,11 +16,13 @@ TEXT runtime·exit(SB),NOSPLIT,$4
 	NACL_SYSCALL(SYS_exit)
 	JMP 0(PC)
 
-TEXT runtime·exit1(SB),NOSPLIT,$4
-	MOVL code+0(FP), AX
+// func exitThread(wait *uint32)
+TEXT runtime·exitThread(SB),NOSPLIT,$4-4
+	MOVL wait+0(FP), AX
+	// SYS_thread_exit will clear *wait when the stack is free.
 	MOVL AX, 0(SP)
 	NACL_SYSCALL(SYS_thread_exit)
-	RET
+	JMP 0(PC)
 
 TEXT runtime·open(SB),NOSPLIT,$12
 	MOVL name+0(FP), AX
@@ -227,10 +229,18 @@ TEXT runtime·mmap(SB),NOSPLIT,$32
 	LEAL	24(SP), AX
 	MOVL	AX, 20(SP)
 	NACL_SYSCALL(SYS_mmap)
-	MOVL	AX, ret+24(FP)
+	CMPL	AX, $-4095
+	JNA	ok
+	NEGL	AX
+	MOVL	$0, p+24(FP)
+	MOVL	AX, err+28(FP)
+	RET
+ok:
+	MOVL	AX, p+24(FP)
+	MOVL	$0, err+28(FP)
 	RET
 
-TEXT time·now(SB),NOSPLIT,$20
+TEXT runtime·walltime(SB),NOSPLIT,$20
 	MOVL $0, 0(SP) // real time clock
 	LEAL 8(SP), AX
 	MOVL AX, 4(SP) // timespec
@@ -240,23 +250,14 @@ TEXT time·now(SB),NOSPLIT,$20
 	MOVL 16(SP), BX // nsec
 
 	// sec is in AX, nsec in BX
-	MOVL	AX, sec+0(FP)
-	MOVL	CX, sec+4(FP)
+	MOVL	AX, sec_lo+0(FP)
+	MOVL	CX, sec_hi+4(FP)
 	MOVL	BX, nsec+8(FP)
 	RET
 
 TEXT syscall·now(SB),NOSPLIT,$0
-	JMP time·now(SB)
+	JMP runtime·walltime(SB)
 
-TEXT runtime·nacl_clock_gettime(SB),NOSPLIT,$8
-	MOVL arg1+0(FP), AX
-	MOVL AX, 0(SP)
-	MOVL arg2+4(FP), AX
-	MOVL AX, 4(SP)
-	NACL_SYSCALL(SYS_clock_gettime)
-	MOVL AX, ret+8(FP)
-	RET
-	
 TEXT runtime·nanotime(SB),NOSPLIT,$20
 	MOVL $0, 0(SP) // real time clock
 	LEAL 8(SP), AX
@@ -277,7 +278,7 @@ TEXT runtime·nanotime(SB),NOSPLIT,$20
 	RET
 
 TEXT runtime·setldt(SB),NOSPLIT,$8
-	MOVL	addr+4(FP), BX // aka base
+	MOVL	base+4(FP), BX
 	ADDL	$0x8, BX
 	MOVL	BX, 0(SP)
 	NACL_SYSCALL(SYS_tls_init)
@@ -297,17 +298,18 @@ TEXT runtime·sigtramp(SB),NOSPLIT,$0
 	JMP 	ret
 
 	// save g
+	NOP	SP	// tell vet SP changed - stop checking offsets
 	MOVL	DI, 20(SP)
-	
+
 	// g = m->gsignal
 	MOVL	g_m(DI), BX
 	MOVL	m_gsignal(BX), BX
 	MOVL	BX, g(CX)
-	
+
 	// copy arguments for sighandler
 	MOVL	$11, 0(SP) // signal
 	MOVL	$0, 4(SP) // siginfo
-	LEAL	ctxt+4(FP), AX
+	LEAL	8(SP), AX
 	MOVL	AX, 8(SP) // context
 	MOVL	DI, 12(SP) // g
 
@@ -346,11 +348,10 @@ ret:
 	// Today those registers are just PC and SP, but in case additional registers
 	// are relevant in the future (for example DX is the Go func context register)
 	// we restore as many registers as possible.
-	// 
+	//
 	// We smash BP, because that's what the linker smashes during RET.
 	//
-	LEAL	ctxt+4(FP), BP
-	ADDL	$64, BP
+	LEAL	72(SP), BP
 	MOVL	0(BP), AX
 	MOVL	4(BP), CX
 	MOVL	8(BP), DX
@@ -365,9 +366,9 @@ ret:
 
 // func getRandomData([]byte)
 TEXT runtime·getRandomData(SB),NOSPLIT,$8-12
-	MOVL buf+0(FP), AX
+	MOVL arg_base+0(FP), AX
 	MOVL AX, 0(SP)
-	MOVL len+4(FP), AX
+	MOVL arg_len+4(FP), AX
 	MOVL AX, 4(SP)
 	NACL_SYSCALL(SYS_get_random_bytes)
 	RET

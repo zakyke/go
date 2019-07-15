@@ -12,7 +12,7 @@ package ecdsa
 
 // References:
 //   [NSA]: Suite B implementer's guide to FIPS 186-3,
-//     http://www.nsa.gov/ia/_files/ecdsa.pdf
+//     https://apps.nsa.gov/iaarchive/library/ia-guidance/ia-solutions-for-classified/algorithm-guidance/suite-b-implementers-guide-to-fips-186-3-ecdsa.cfm
 //   [SECG]: SECG, SEC1
 //     http://www.secg.org/sec1-v2.pdf
 
@@ -21,8 +21,10 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/elliptic"
+	"crypto/internal/randutil"
 	"crypto/sha512"
 	"encoding/asn1"
+	"errors"
 	"io"
 	"math/big"
 )
@@ -48,7 +50,7 @@ type PublicKey struct {
 	X, Y *big.Int
 }
 
-// PrivateKey represents a ECDSA private key.
+// PrivateKey represents an ECDSA private key.
 type PrivateKey struct {
 	PublicKey
 	D *big.Int
@@ -63,12 +65,15 @@ func (priv *PrivateKey) Public() crypto.PublicKey {
 	return &priv.PublicKey
 }
 
-// Sign signs msg with priv, reading randomness from rand. This method is
-// intended to support keys where the private part is kept in, for example, a
-// hardware module. Common uses should use the Sign function in this package
-// directly.
-func (priv *PrivateKey) Sign(rand io.Reader, msg []byte, opts crypto.SignerOpts) ([]byte, error) {
-	r, s, err := Sign(rand, priv, msg)
+// Sign signs digest with priv, reading randomness from rand. The opts argument
+// is not currently used but, in keeping with the crypto.Signer interface,
+// should be the hash function used to digest the message.
+//
+// This method implements crypto.Signer, which is an interface to support keys
+// where the private part is kept in, for example, a hardware module. Common
+// uses should use the Sign function in this package directly.
+func (priv *PrivateKey) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+	r, s, err := Sign(rand, priv, digest)
 	if err != nil {
 		return nil, err
 	}
@@ -96,17 +101,17 @@ func randFieldElement(c elliptic.Curve, rand io.Reader) (k *big.Int, err error) 
 }
 
 // GenerateKey generates a public and private key pair.
-func GenerateKey(c elliptic.Curve, rand io.Reader) (priv *PrivateKey, err error) {
+func GenerateKey(c elliptic.Curve, rand io.Reader) (*PrivateKey, error) {
 	k, err := randFieldElement(c, rand)
 	if err != nil {
-		return
+		return nil, err
 	}
 
-	priv = new(PrivateKey)
+	priv := new(PrivateKey)
 	priv.PublicKey.Curve = c
 	priv.D = k
 	priv.PublicKey.X, priv.PublicKey.Y = c.ScalarBaseMult(k.Bytes())
-	return
+	return priv, nil
 }
 
 // hashToInt converts a hash value to an integer. There is some disagreement
@@ -140,12 +145,17 @@ func fermatInverse(k, N *big.Int) *big.Int {
 	return new(big.Int).Exp(k, nMinus2, N)
 }
 
-// Sign signs an arbitrary length hash (which should be the result of hashing a
-// larger message) using the private key, priv. It returns the signature as a
-// pair of integers. The security of the private key depends on the entropy of
-// rand.
+var errZeroParam = errors.New("zero parameter")
+
+// Sign signs a hash (which should be the result of hashing a larger message)
+// using the private key, priv. If the hash is longer than the bit-length of the
+// private key's curve order, the hash will be truncated to that length.  It
+// returns the signature as a pair of integers. The security of the private key
+// depends on the entropy of rand.
 func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err error) {
-	// Get max(log2(q) / 2, 256) bits of entropy from rand.
+	randutil.MaybeReadByte(rand)
+
+	// Get min(log2(q) / 2, 256) bits of entropy from rand.
 	entropylen := (priv.Curve.Params().BitSize + 7) / 16
 	if entropylen > 32 {
 		entropylen = 32
@@ -179,12 +189,21 @@ func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err err
 
 	// See [NSA] 3.4.1
 	c := priv.PublicKey.Curve
+	e := hashToInt(hash, c)
+	r, s, err = sign(priv, &csprng, c, e)
+	return
+}
+
+func signGeneric(priv *PrivateKey, csprng *cipher.StreamReader, c elliptic.Curve, e *big.Int) (r, s *big.Int, err error) {
 	N := c.Params().N
+	if N.Sign() == 0 {
+		return nil, nil, errZeroParam
+	}
 
 	var k, kInv *big.Int
 	for {
 		for {
-			k, err = randFieldElement(c, csprng)
+			k, err = randFieldElement(c, *csprng)
 			if err != nil {
 				r = nil
 				return
@@ -193,7 +212,7 @@ func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err err
 			if in, ok := priv.Curve.(invertible); ok {
 				kInv = in.Inverse(k)
 			} else {
-				kInv = fermatInverse(k, N)
+				kInv = fermatInverse(k, N) // N != 0
 			}
 
 			r, _ = priv.Curve.ScalarBaseMult(k.Bytes())
@@ -202,17 +221,14 @@ func Sign(rand io.Reader, priv *PrivateKey, hash []byte) (r, s *big.Int, err err
 				break
 			}
 		}
-
-		e := hashToInt(hash, c)
 		s = new(big.Int).Mul(priv.D, r)
 		s.Add(s, e)
 		s.Mul(s, kInv)
-		s.Mod(s, N)
+		s.Mod(s, N) // N != 0
 		if s.Sign() != 0 {
 			break
 		}
 	}
-
 	return
 }
 
@@ -223,15 +239,19 @@ func Verify(pub *PublicKey, hash []byte, r, s *big.Int) bool {
 	c := pub.Curve
 	N := c.Params().N
 
-	if r.Sign() == 0 || s.Sign() == 0 {
+	if r.Sign() <= 0 || s.Sign() <= 0 {
 		return false
 	}
 	if r.Cmp(N) >= 0 || s.Cmp(N) >= 0 {
 		return false
 	}
 	e := hashToInt(hash, c)
+	return verify(pub, c, e, r, s)
+}
 
+func verifyGeneric(pub *PublicKey, c elliptic.Curve, e, r, s *big.Int) bool {
 	var w *big.Int
+	N := c.Params().N
 	if in, ok := c.(invertible); ok {
 		w = in.Inverse(s)
 	} else {

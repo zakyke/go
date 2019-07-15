@@ -2,6 +2,9 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
+// Note: some of these functions are semantically inlined
+// by the compiler (in src/cmd/compile/internal/gc/ssa.go).
+
 #include "textflag.h"
 
 // bool Cas(int32 *val, int32 old, int32 new)
@@ -40,6 +43,9 @@ TEXT runtime∕internal∕atomic·Cas64(SB), NOSPLIT, $0-25
 TEXT runtime∕internal∕atomic·Casuintptr(SB), NOSPLIT, $0-25
 	JMP	runtime∕internal∕atomic·Cas64(SB)
 
+TEXT runtime∕internal∕atomic·CasRel(SB), NOSPLIT, $0-17
+	JMP	runtime∕internal∕atomic·Cas(SB)
+
 TEXT runtime∕internal∕atomic·Loaduintptr(SB), NOSPLIT, $0-16
 	JMP	runtime∕internal∕atomic·Load64(SB)
 
@@ -52,10 +58,10 @@ TEXT runtime∕internal∕atomic·Storeuintptr(SB), NOSPLIT, $0-16
 TEXT runtime∕internal∕atomic·Loadint64(SB), NOSPLIT, $0-16
 	JMP	runtime∕internal∕atomic·Load64(SB)
 
-TEXT runtime∕internal∕atomic·Xaddint64(SB), NOSPLIT, $0-16
+TEXT runtime∕internal∕atomic·Xaddint64(SB), NOSPLIT, $0-24
 	JMP	runtime∕internal∕atomic·Xadd64(SB)
 
-// bool Casp(void **val, void *old, void *new)
+// bool Casp1(void **val, void *old, void *new)
 // Atomically:
 //	if(*val == old){
 //		*val = new;
@@ -115,7 +121,7 @@ TEXT runtime∕internal∕atomic·Xchg64(SB), NOSPLIT, $0-24
 TEXT runtime∕internal∕atomic·Xchguintptr(SB), NOSPLIT, $0-24
 	JMP	runtime∕internal∕atomic·Xchg64(SB)
 
-TEXT runtime∕internal∕atomic·Storep1(SB), NOSPLIT, $0-16
+TEXT runtime∕internal∕atomic·StorepNoWB(SB), NOSPLIT, $0-16
 	MOVQ	ptr+0(FP), BX
 	MOVQ	val+8(FP), AX
 	XCHGQ	AX, 0(BX)
@@ -126,6 +132,9 @@ TEXT runtime∕internal∕atomic·Store(SB), NOSPLIT, $0-12
 	MOVL	val+8(FP), AX
 	XCHGL	AX, 0(BX)
 	RET
+
+TEXT runtime∕internal∕atomic·StoreRel(SB), NOSPLIT, $0-12
+	JMP	runtime∕internal∕atomic·Store(SB)
 
 TEXT runtime∕internal∕atomic·Store64(SB), NOSPLIT, $0-16
 	MOVQ	ptr+0(FP), BX

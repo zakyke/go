@@ -61,9 +61,9 @@ func testPrint(t *testing.T, flag int, prefix string, pattern string, useFormat 
 	line := buf.String()
 	line = line[0 : len(line)-1]
 	pattern = "^" + pattern + "hello 23 world$"
-	matched, err4 := regexp.MatchString(pattern, line)
-	if err4 != nil {
-		t.Fatal("pattern did not compile:", err4)
+	matched, err := regexp.MatchString(pattern, line)
+	if err != nil {
+		t.Fatal("pattern did not compile:", err)
 	}
 	if !matched {
 		t.Errorf("log output should match %q is %q", pattern, line)
@@ -85,6 +85,17 @@ func TestOutput(t *testing.T) {
 	l.Println(testString)
 	if expect := testString + "\n"; b.String() != expect {
 		t.Errorf("log output should match %q is %q", expect, b.String())
+	}
+}
+
+func TestOutputRace(t *testing.T) {
+	var b bytes.Buffer
+	l := New(&b, "", 0)
+	for i := 0; i < 100; i++ {
+		go func() {
+			l.SetFlags(0)
+		}()
+		l.Output(0, "")
 	}
 }
 
@@ -177,6 +188,16 @@ func BenchmarkPrintln(b *testing.B) {
 	const testString = "test"
 	var buf bytes.Buffer
 	l := New(&buf, "", LstdFlags)
+	for i := 0; i < b.N; i++ {
+		buf.Reset()
+		l.Println(testString)
+	}
+}
+
+func BenchmarkPrintlnNoFlags(b *testing.B) {
+	const testString = "test"
+	var buf bytes.Buffer
+	l := New(&buf, "", 0)
 	for i := 0; i < b.N; i++ {
 		buf.Reset()
 		l.Println(testString)

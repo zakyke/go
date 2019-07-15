@@ -1,4 +1,4 @@
-// Copyright 2011 The Go Authors.  All rights reserved.
+// Copyright 2011 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
@@ -8,7 +8,7 @@
 //
 // The Go path is a list of directory trees containing Go source code.
 // It is consulted to resolve imports that cannot be found in the standard
-// Go tree.  The default path is the value of the GOPATH environment
+// Go tree. The default path is the value of the GOPATH environment
 // variable, interpreted as a path list appropriate to the operating system
 // (on Unix, the variable is a colon-separated string;
 // on Windows, a semicolon-separated string;
@@ -16,7 +16,7 @@
 //
 // Each directory listed in the Go path must have a prescribed structure:
 //
-// The src/ directory holds source code.  The path below 'src' determines
+// The src/ directory holds source code. The path below 'src' determines
 // the import path or executable name.
 //
 // The pkg/ directory holds installed package objects.
@@ -31,9 +31,9 @@
 //
 // The bin/ directory holds compiled commands.
 // Each command is named for its source directory, but only
-// using the final element, not the entire path.  That is, the
+// using the final element, not the entire path. That is, the
 // command with source in DIR/src/foo/quux is installed into
-// DIR/bin/quux, not DIR/bin/foo/quux.  The foo/ is stripped
+// DIR/bin/quux, not DIR/bin/foo/quux. The foo/ is stripped
 // so that you can add DIR/bin to your PATH to get at the
 // installed commands.
 //
@@ -70,10 +70,11 @@
 // To distinguish build constraints from package documentation, a series of
 // build constraints must be followed by a blank line.
 //
-// A build constraint is evaluated as the OR of space-separated options;
-// each option evaluates as the AND of its comma-separated terms;
-// and each term is an alphanumeric word or, preceded by !, its negation.
-// That is, the build constraint:
+// A build constraint is evaluated as the OR of space-separated options.
+// Each option evaluates as the AND of its comma-separated terms.
+// Each term consists of letters, digits, underscores, and dots.
+// A term may be negated with a preceding !.
+// For example, the build constraint:
 //
 //	// +build linux,386 darwin,!cgo
 //
@@ -103,7 +104,16 @@
 //	- "go1.4", from Go version 1.4 onward
 //	- "go1.5", from Go version 1.5 onward
 //	- "go1.6", from Go version 1.6 onward
+//	- "go1.7", from Go version 1.7 onward
+//	- "go1.8", from Go version 1.8 onward
+//	- "go1.9", from Go version 1.9 onward
+//	- "go1.10", from Go version 1.10 onward
+//	- "go1.11", from Go version 1.11 onward
+//	- "go1.12", from Go version 1.12 onward
+//	- "go1.13", from Go version 1.13 onward
 //	- any additional words listed in ctxt.BuildTags
+//
+// There are no build tags for beta or minor releases.
 //
 // If a file's name, after stripping the extension and a possible _test suffix,
 // matches any of the following patterns:
@@ -137,5 +147,34 @@
 //
 // Using GOOS=android matches build tags and files as for GOOS=linux
 // in addition to android tags and files.
+//
+// Using GOOS=illumos matches build tags and files as for GOOS=solaris
+// in addition to illumos tags and files.
+//
+// Binary-Only Packages
+//
+// In Go 1.12 and earlier, it was possible to distribute packages in binary
+// form without including the source code used for compiling the package.
+// The package was distributed with a source file not excluded by build
+// constraints and containing a "//go:binary-only-package" comment. Like a
+// build constraint, this comment appeared at the top of a file, preceded
+// only by blank lines and other line comments and with a blank line
+// following the comment, to separate it from the package documentation.
+// Unlike build constraints, this comment is only recognized in non-test
+// Go source files.
+//
+// The minimal source code for a binary-only package was therefore:
+//
+//	//go:binary-only-package
+//
+//	package mypkg
+//
+// The source code could include additional Go code. That code was never
+// compiled but would be processed by tools like godoc and might be useful
+// as end-user documentation.
+//
+// "go build" and other commands no longer support binary-only-packages.
+// Import and ImportDir will still set the BinaryOnly flag in packages
+// containing these comments for use in tools and error messages.
 //
 package build

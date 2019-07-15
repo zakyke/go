@@ -79,15 +79,10 @@ const (
 	_EV_CLEAR     = 0x20
 	_EV_RECEIPT   = 0
 	_EV_ERROR     = 0x4000
+	_EV_EOF       = 0x8000
 	_EVFILT_READ  = 0x0
 	_EVFILT_WRITE = 0x1
 )
-
-type sigaltstackt struct {
-	ss_sp    uintptr
-	ss_size  uintptr
-	ss_flags int32
-}
 
 type sigset struct {
 	__bits [4]uint32
@@ -110,19 +105,18 @@ type stackt struct {
 type timespec struct {
 	tv_sec  int64
 	tv_nsec int32
+	_       [4]byte // EABI
 }
 
-func (ts *timespec) set_sec(x int32) {
-	ts.tv_sec = int64(x)
-}
-
-func (ts *timespec) set_nsec(x int32) {
-	ts.tv_nsec = x
+//go:nosplit
+func (ts *timespec) setNsec(ns int64) {
+	ts.tv_sec = int64(timediv(ns, 1e9, &ts.tv_nsec))
 }
 
 type timeval struct {
 	tv_sec  int64
 	tv_usec int32
+	_       [4]byte // EABI
 }
 
 func (tv *timeval) set_usec(x int32) {
@@ -135,10 +129,11 @@ type itimerval struct {
 }
 
 type mcontextt struct {
-	__gregs [17]uint32
-	__fpu   [4 + 8*32 + 4]byte // EABI
-	// __fpu [4+4*33+4]byte // not EABI
+	__gregs     [17]uint32
+	_           [4]byte   // EABI
+	__fpu       [272]byte // EABI
 	_mc_tlsbase uint32
+	_           [4]byte // EABI
 }
 
 type ucontextt struct {
@@ -146,6 +141,7 @@ type ucontextt struct {
 	uc_link     *ucontextt
 	uc_sigmask  sigset
 	uc_stack    stackt
+	_           [4]byte // EABI
 	uc_mcontext mcontextt
 	__uc_pad    [2]int32
 }
@@ -157,6 +153,7 @@ type keventt struct {
 	fflags uint32
 	data   int64
 	udata  *byte
+	_      [4]byte // EABI
 }
 
 // created by cgo -cdefs and then converted to Go

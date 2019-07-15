@@ -7,10 +7,12 @@
 package types_test
 
 import (
+	"bytes"
 	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
+	"internal/testenv"
 	"sort"
 	"strings"
 	"testing"
@@ -18,15 +20,17 @@ import (
 	. "go/types"
 )
 
-func TestIssue5770(t *testing.T) {
-	src := `package p; type S struct{T}`
+func mustParse(t *testing.T, src string) *ast.File {
 	f, err := parser.ParseFile(fset, "", src, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	return f
+}
+func TestIssue5770(t *testing.T) {
+	f := mustParse(t, `package p; type S struct{T}`)
 	conf := Config{Importer: importer.Default()}
-	_, err = conf.Check(f.Name.Name, fset, []*ast.File{f}, nil) // do not crash
+	_, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, nil) // do not crash
 	want := "undeclared name: T"
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("got: %v; want: %s", err, want)
@@ -45,14 +49,11 @@ var (
 	_ = (interface{})("foo")
 	_ = (interface{})(nil)
 )`
-	f, err := parser.ParseFile(fset, "", src, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := mustParse(t, src)
 
 	var conf Config
 	types := make(map[ast.Expr]TypeAndValue)
-	_, err = conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Types: types})
+	_, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Types: types})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,14 +94,11 @@ func f() int {
 	return 0
 }
 `
-	f, err := parser.ParseFile(fset, "", src, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := mustParse(t, src)
 
 	var conf Config
 	types := make(map[ast.Expr]TypeAndValue)
-	_, err = conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Types: types})
+	_, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Types: types})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,14 +125,11 @@ package p
 func (T) m() (res bool) { return }
 type T struct{} // receiver type after method declaration
 `
-	f, err := parser.ParseFile(fset, "", src, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	f := mustParse(t, src)
 
 	var conf Config
 	defs := make(map[*ast.Ident]Object)
-	_, err = conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Defs: defs})
+	_, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Defs: defs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +156,8 @@ func _() {
         _, _, _ = x, y, z  // uses x, y, z
 }
 `
+	f := mustParse(t, src)
+
 	const want = `L3 defs func p._()
 L4 defs const w untyped int
 L5 defs var x int
@@ -172,16 +169,11 @@ L7 uses var x int
 L7 uses var y int
 L7 uses var z int`
 
-	f, err := parser.ParseFile(fset, "", src, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	// don't abort at the first error
 	conf := Config{Error: func(err error) { t.Log(err) }}
 	defs := make(map[*ast.Ident]Object)
 	uses := make(map[*ast.Ident]Object)
-	_, err = conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Defs: defs, Uses: uses})
+	_, err := conf.Check(f.Name.Name, fset, []*ast.File{f}, &Info{Defs: defs, Uses: uses})
 	if s := fmt.Sprint(err); !strings.HasSuffix(s, "cannot assign to w") {
 		t.Errorf("Check: unexpected error: %s", s)
 	}
@@ -202,5 +194,274 @@ L7 uses var z int`
 	got := strings.Join(facts, "\n")
 	if got != want {
 		t.Errorf("Unexpected defs/uses\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// This tests that the package associated with the types.Object.Pkg method
+// is the type's package independent of the order in which the imports are
+// listed in the sources src1, src2 below.
+// The actual issue is in go/internal/gcimporter which has a corresponding
+// test; we leave this test here to verify correct behavior at the go/types
+// level.
+func TestIssue13898(t *testing.T) {
+	testenv.MustHaveGoBuild(t)
+
+	const src0 = `
+package main
+
+import "go/types"
+
+func main() {
+	var info types.Info
+	for _, obj := range info.Uses {
+		_ = obj.Pkg()
+	}
+}
+`
+	// like src0, but also imports go/importer
+	const src1 = `
+package main
+
+import (
+	"go/types"
+	_ "go/importer"
+)
+
+func main() {
+	var info types.Info
+	for _, obj := range info.Uses {
+		_ = obj.Pkg()
+	}
+}
+`
+	// like src1 but with different import order
+	// (used to fail with this issue)
+	const src2 = `
+package main
+
+import (
+	_ "go/importer"
+	"go/types"
+)
+
+func main() {
+	var info types.Info
+	for _, obj := range info.Uses {
+		_ = obj.Pkg()
+	}
+}
+`
+	f := func(test, src string) {
+		f := mustParse(t, src)
+		cfg := Config{Importer: importer.Default()}
+		info := Info{Uses: make(map[*ast.Ident]Object)}
+		_, err := cfg.Check("main", fset, []*ast.File{f}, &info)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var pkg *Package
+		count := 0
+		for id, obj := range info.Uses {
+			if id.Name == "Pkg" {
+				pkg = obj.Pkg()
+				count++
+			}
+		}
+		if count != 1 {
+			t.Fatalf("%s: got %d entries named Pkg; want 1", test, count)
+		}
+		if pkg.Name() != "types" {
+			t.Fatalf("%s: got %v; want package types", test, pkg)
+		}
+	}
+
+	f("src0", src0)
+	f("src1", src1)
+	f("src2", src2)
+}
+
+func TestIssue22525(t *testing.T) {
+	f := mustParse(t, `package p; func f() { var a, b, c, d, e int }`)
+
+	got := "\n"
+	conf := Config{Error: func(err error) { got += err.Error() + "\n" }}
+	conf.Check(f.Name.Name, fset, []*ast.File{f}, nil) // do not crash
+	want := `
+1:27: a declared but not used
+1:30: b declared but not used
+1:33: c declared but not used
+1:36: d declared but not used
+1:39: e declared but not used
+`
+	if got != want {
+		t.Errorf("got: %swant: %s", got, want)
+	}
+}
+
+func TestIssue25627(t *testing.T) {
+	const prefix = `package p; import "unsafe"; type P *struct{}; type I interface{}; type T `
+	// The src strings (without prefix) are constructed such that the number of semicolons
+	// plus one corresponds to the number of fields expected in the respective struct.
+	for _, src := range []string{
+		`struct { x Missing }`,
+		`struct { Missing }`,
+		`struct { *Missing }`,
+		`struct { unsafe.Pointer }`,
+		`struct { P }`,
+		`struct { *I }`,
+		`struct { a int; b Missing; *Missing }`,
+	} {
+		f := mustParse(t, prefix+src)
+
+		cfg := Config{Importer: importer.Default(), Error: func(err error) {}}
+		info := &Info{Types: make(map[ast.Expr]TypeAndValue)}
+		_, err := cfg.Check(f.Name.Name, fset, []*ast.File{f}, info)
+		if err != nil {
+			if _, ok := err.(Error); !ok {
+				t.Fatal(err)
+			}
+		}
+
+		ast.Inspect(f, func(n ast.Node) bool {
+			if spec, _ := n.(*ast.TypeSpec); spec != nil {
+				if tv, ok := info.Types[spec.Type]; ok && spec.Name.Name == "T" {
+					want := strings.Count(src, ";") + 1
+					if got := tv.Type.(*Struct).NumFields(); got != want {
+						t.Errorf("%s: got %d fields; want %d", src, got, want)
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+
+func TestIssue28005(t *testing.T) {
+	// method names must match defining interface name for this test
+	// (see last comment in this function)
+	sources := [...]string{
+		"package p; type A interface{ A() }",
+		"package p; type B interface{ B() }",
+		"package p; type X interface{ A; B }",
+	}
+
+	// compute original file ASTs
+	var orig [len(sources)]*ast.File
+	for i, src := range sources {
+		orig[i] = mustParse(t, src)
+	}
+
+	// run the test for all order permutations of the incoming files
+	for _, perm := range [][len(sources)]int{
+		{0, 1, 2},
+		{0, 2, 1},
+		{1, 0, 2},
+		{1, 2, 0},
+		{2, 0, 1},
+		{2, 1, 0},
+	} {
+		// create file order permutation
+		files := make([]*ast.File, len(sources))
+		for i := range perm {
+			files[i] = orig[perm[i]]
+		}
+
+		// type-check package with given file order permutation
+		var conf Config
+		info := &Info{Defs: make(map[*ast.Ident]Object)}
+		_, err := conf.Check("", fset, files, info)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// look for interface object X
+		var obj Object
+		for name, def := range info.Defs {
+			if name.Name == "X" {
+				obj = def
+				break
+			}
+		}
+		if obj == nil {
+			t.Fatal("interface not found")
+		}
+		iface := obj.Type().Underlying().(*Interface) // I must be an interface
+
+		// Each iface method m is embedded; and m's receiver base type name
+		// must match the method's name per the choice in the source file.
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			recvName := m.Type().(*Signature).Recv().Type().(*Named).Obj().Name()
+			if recvName != m.Name() {
+				t.Errorf("perm %v: got recv %s; want %s", perm, recvName, m.Name())
+			}
+		}
+	}
+}
+
+func TestIssue28282(t *testing.T) {
+	// create type interface { error }
+	et := Universe.Lookup("error").Type()
+	it := NewInterfaceType(nil, []Type{et})
+	it.Complete()
+	// verify that after completing the interface, the embedded method remains unchanged
+	want := et.Underlying().(*Interface).Method(0)
+	got := it.Method(0)
+	if got != want {
+		t.Fatalf("%s.Method(0): got %q (%p); want %q (%p)", it, got, got, want, want)
+	}
+	// verify that lookup finds the same method in both interfaces (redundant check)
+	obj, _, _ := LookupFieldOrMethod(et, false, nil, "Error")
+	if obj != want {
+		t.Fatalf("%s.Lookup: got %q (%p); want %q (%p)", et, obj, obj, want, want)
+	}
+	obj, _, _ = LookupFieldOrMethod(it, false, nil, "Error")
+	if obj != want {
+		t.Fatalf("%s.Lookup: got %q (%p); want %q (%p)", it, obj, obj, want, want)
+	}
+}
+
+func TestIssue29029(t *testing.T) {
+	f1 := mustParse(t, `package p; type A interface { M() }`)
+	f2 := mustParse(t, `package p; var B interface { A }`)
+
+	// printInfo prints the *Func definitions recorded in info, one *Func per line.
+	printInfo := func(info *Info) string {
+		var buf bytes.Buffer
+		for _, obj := range info.Defs {
+			if fn, ok := obj.(*Func); ok {
+				fmt.Fprintln(&buf, fn)
+			}
+		}
+		return buf.String()
+	}
+
+	// The *Func (method) definitions for package p must be the same
+	// independent on whether f1 and f2 are type-checked together, or
+	// incrementally.
+
+	// type-check together
+	var conf Config
+	info := &Info{Defs: make(map[*ast.Ident]Object)}
+	check := NewChecker(&conf, fset, NewPackage("", "p"), info)
+	if err := check.Files([]*ast.File{f1, f2}); err != nil {
+		t.Fatal(err)
+	}
+	want := printInfo(info)
+
+	// type-check incrementally
+	info = &Info{Defs: make(map[*ast.Ident]Object)}
+	check = NewChecker(&conf, fset, NewPackage("", "p"), info)
+	if err := check.Files([]*ast.File{f1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.Files([]*ast.File{f2}); err != nil {
+		t.Fatal(err)
+	}
+	got := printInfo(info)
+
+	if got != want {
+		t.Errorf("\ngot : %swant: %s", got, want)
 	}
 }

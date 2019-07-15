@@ -1,7 +1,7 @@
 // Derived from Inferno's libkern/memmove-386.s (adapted for amd64)
-// http://code.google.com/p/inferno-os/source/browse/libkern/memmove-386.s
+// https://bitbucket.org/inferno-os/inferno-os/src/default/libkern/memmove-386.s
 //
-//         Copyright © 1994-1999 Lucent Technologies Inc.  All rights reserved.
+//         Copyright © 1994-1999 Lucent Technologies Inc. All rights reserved.
 //         Revisions Copyright © 2000-2007 Vita Nuova Holdings Limited (www.vitanuova.com).  All rights reserved.
 //         Portions Copyright 2009 The Go Authors. All rights reserved.
 //
@@ -25,7 +25,7 @@
 
 #include "textflag.h"
 
-// void runtime·memmove(void*, void*, uintptr)
+// func memmove(to, from unsafe.Pointer, n uintptr)
 TEXT runtime·memmove(SB), NOSPLIT, $0-24
 
 	MOVQ	to+0(FP), DI
@@ -33,8 +33,8 @@ TEXT runtime·memmove(SB), NOSPLIT, $0-24
 	MOVQ	n+16(FP), BX
 
 	// REP instructions have a high startup cost, so we handle small sizes
-	// with some straightline code.  The REP MOVSQ instruction is really fast
-	// for large sizes.  The cutover is approximately 1K.
+	// with some straightline code. The REP MOVSQ instruction is really fast
+	// for large sizes. The cutover is approximately 1K.
 tail:
 	TESTQ	BX, BX
 	JEQ	move_0
@@ -73,7 +73,7 @@ back:
 	ADDQ	BX, CX
 	CMPQ	CX, DI
 	JLS	forward
-	
+
 /*
  * whole thing backwards has
  * adjusted addresses

@@ -382,9 +382,9 @@ func TestFloat32Distribution(t *testing.T) {
 		9,
 		11,
 	}
-	var winc, einc = uint64(1), 1 // soak test (~1.5s on x86-64)
-	if testing.Short() {
-		winc, einc = 5, 15 // quick test (~60ms on x86-64)
+	var winc, einc = uint64(5), 15 // quick test (~60ms on x86-64)
+	if *long {
+		winc, einc = uint64(1), 1 // soak test (~1.5s on x86-64)
 	}
 
 	for _, sign := range "+-" {
@@ -430,9 +430,9 @@ func TestFloat64Distribution(t *testing.T) {
 		9,
 		11,
 	}
-	var winc, einc = uint64(1), 1 // soak test (~75s on x86-64)
-	if testing.Short() {
-		winc, einc = 10, 500 // quick test (~12ms on x86-64)
+	var winc, einc = uint64(10), 500 // quick test (~12ms on x86-64)
+	if *long {
+		winc, einc = uint64(1), 1 // soak test (~75s on x86-64)
 	}
 
 	for _, sign := range "+-" {
@@ -618,5 +618,63 @@ func TestIsFinite(t *testing.T) {
 		if isFinite(f) {
 			t.Errorf("IsFinite(%g, (%b))", f, f)
 		}
+	}
+}
+
+func TestRatSetInt64(t *testing.T) {
+	var testCases = []int64{
+		0,
+		1,
+		-1,
+		12345,
+		-98765,
+		math.MaxInt64,
+		math.MinInt64,
+	}
+	var r = new(Rat)
+	for i, want := range testCases {
+		r.SetInt64(want)
+		if !r.IsInt() {
+			t.Errorf("#%d: Rat.SetInt64(%d) is not an integer", i, want)
+		}
+		num := r.Num()
+		if !num.IsInt64() {
+			t.Errorf("#%d: Rat.SetInt64(%d) numerator is not an int64", i, want)
+		}
+		got := num.Int64()
+		if got != want {
+			t.Errorf("#%d: Rat.SetInt64(%d) = %d, but expected %d", i, want, got, want)
+		}
+	}
+}
+
+func TestRatSetUint64(t *testing.T) {
+	var testCases = []uint64{
+		0,
+		1,
+		12345,
+		^uint64(0),
+	}
+	var r = new(Rat)
+	for i, want := range testCases {
+		r.SetUint64(want)
+		if !r.IsInt() {
+			t.Errorf("#%d: Rat.SetUint64(%d) is not an integer", i, want)
+		}
+		num := r.Num()
+		if !num.IsUint64() {
+			t.Errorf("#%d: Rat.SetUint64(%d) numerator is not a uint64", i, want)
+		}
+		got := num.Uint64()
+		if got != want {
+			t.Errorf("#%d: Rat.SetUint64(%d) = %d, but expected %d", i, want, got, want)
+		}
+	}
+}
+
+func BenchmarkRatCmp(b *testing.B) {
+	x, y := NewRat(4, 1), NewRat(7, 2)
+	for i := 0; i < b.N; i++ {
+		x.Cmp(y)
 	}
 }

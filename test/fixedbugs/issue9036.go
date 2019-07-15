@@ -1,10 +1,11 @@
 // errorcheck
 
-// Copyright 2015 The Go Authors.  All rights reserved.
+// Copyright 2015 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// Expects to see error messages on "p" exponents.
+// Expects to see error messages on 'p' exponents
+// for non-hexadecimal floats.
 
 package main
 
@@ -14,10 +15,11 @@ const (
 	x1 = 1.1    // float
 	x2 = 1e10   // float
 	x3 = 0x1e10 // integer (e is a hex digit)
-	x4 = 0x1p10 // ERROR "malformed floating point constant"
-	x5 = 1p10   // ERROR "malformed floating point constant"
-	x6 = 0p0    // ERROR "malformed floating point constant"
 )
+
+const x4 = 0x1p10 // valid hexadecimal float
+const x5 = 1p10   // ERROR "'p' exponent requires hexadecimal mantissa"
+const x6 = 0P0    // ERROR "'P' exponent requires hexadecimal mantissa"
 
 func main() {
 	fmt.Printf("%g %T\n", x1, x1)

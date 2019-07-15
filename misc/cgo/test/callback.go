@@ -12,6 +12,7 @@ void callPanic(void);
 int callGoReturnVal(void);
 int returnAfterGrow(void);
 int returnAfterGrowFromGo(void);
+void callGoWithString(void);
 */
 import "C"
 
@@ -178,21 +179,18 @@ func testCallbackCallers(t *testing.T) {
 	pc := make([]uintptr, 100)
 	n := 0
 	name := []string{
-		"runtime.call16",
 		"runtime.cgocallbackg1",
 		"runtime.cgocallbackg",
 		"runtime.cgocallback_gofunc",
 		"runtime.asmcgocall",
 		"runtime.cgocall",
 		"test._Cfunc_callback",
+		"test.nestedCall.func1",
 		"test.nestedCall",
 		"test.testCallbackCallers",
 		"test.TestCallbackCallers",
 		"testing.tRunner",
 		"runtime.goexit",
-	}
-	if unsafe.Sizeof((*byte)(nil)) == 8 {
-		name[0] = "runtime.call32"
 	}
 	nestedCall(func() {
 		n = runtime.Callers(4, pc)
@@ -201,7 +199,7 @@ func testCallbackCallers(t *testing.T) {
 		t.Errorf("expected %d frames, got %d", len(name), n)
 	}
 	for i := 0; i < n; i++ {
-		f := runtime.FuncForPC(pc[i])
+		f := runtime.FuncForPC(pc[i] - 1) // TODO: use runtime.CallersFrames
 		if f == nil {
 			t.Fatalf("expected non-nil Func for pc %d", pc[i])
 		}
@@ -211,6 +209,10 @@ func testCallbackCallers(t *testing.T) {
 		if strings.HasPrefix(fname, "_") {
 			fname = path.Base(f.Name()[1:])
 		}
+		// In module mode, this package has a fully-qualified import path.
+		// Remove it if present.
+		fname = strings.TrimPrefix(fname, "misc/cgo/")
+
 		namei := ""
 		if i < len(name) {
 			namei = name[i]
@@ -276,8 +278,24 @@ func goReturnVal() (r C.int) {
 	return
 }
 
+// Test that C can pass in a Go string from a string constant.
+func testCallGoWithString(t *testing.T) {
+	C.callGoWithString()
+	want := "string passed from C to Go"
+	if stringFromGo != want {
+		t.Errorf("string passed through C is %s, want %s", stringFromGo, want)
+	}
+}
+
+var stringFromGo string
+
+//export goWithString
+func goWithString(s string) {
+	stringFromGo = s
+}
+
 func testCallbackStack(t *testing.T) {
-	// Make cgo call and callback with different amount of stack stack available.
+	// Make cgo call and callback with different amount of stack available.
 	// We do not do any explicit checks, just ensure that it does not crash.
 	for _, f := range splitTests {
 		f()

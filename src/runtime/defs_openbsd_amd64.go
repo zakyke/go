@@ -17,6 +17,7 @@ const (
 	_MAP_ANON    = 0x1000
 	_MAP_PRIVATE = 0x2
 	_MAP_FIXED   = 0x10
+	_MAP_STACK   = 0x4000
 
 	_MADV_FREE = 0x6
 
@@ -80,6 +81,7 @@ const (
 	_EV_DELETE    = 0x2
 	_EV_CLEAR     = 0x20
 	_EV_ERROR     = 0x4000
+	_EV_EOF       = 0x8000
 	_EVFILT_READ  = -0x1
 	_EVFILT_WRITE = -0x2
 )
@@ -88,13 +90,6 @@ type tforkt struct {
 	tf_tcb   unsafe.Pointer
 	tf_tid   *int32
 	tf_stack uintptr
-}
-
-type sigaltstackt struct {
-	ss_sp     uintptr
-	ss_size   uintptr
-	ss_flags  int32
-	pad_cgo_0 [4]byte
 }
 
 type sigcontext struct {
@@ -149,12 +144,10 @@ type timespec struct {
 	tv_nsec int64
 }
 
-func (ts *timespec) set_sec(x int64) {
-	ts.tv_sec = x
-}
-
-func (ts *timespec) set_nsec(x int32) {
-	ts.tv_nsec = int64(x)
+//go:nosplit
+func (ts *timespec) setNsec(ns int64) {
+	ts.tv_sec = ns / 1e9
+	ts.tv_nsec = ns % 1e9
 }
 
 type timeval struct {

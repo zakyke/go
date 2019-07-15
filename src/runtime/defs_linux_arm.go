@@ -16,6 +16,7 @@ const (
 	_MAP_FIXED   = 0x10
 
 	_MADV_DONTNEED   = 0x4
+	_MADV_FREE       = 0x8
 	_MADV_HUGEPAGE   = 0xe
 	_MADV_NOHUGEPAGE = 0xf
 
@@ -93,15 +94,12 @@ type timespec struct {
 	tv_nsec int32
 }
 
-func (ts *timespec) set_sec(x int64) {
-	ts.tv_sec = int32(x)
+//go:nosplit
+func (ts *timespec) setNsec(ns int64) {
+	ts.tv_sec = timediv(ns, 1e9, &ts.tv_nsec)
 }
 
-func (ts *timespec) set_nsec(x int32) {
-	ts.tv_nsec = x
-}
-
-type sigaltstackt struct {
+type stackt struct {
 	ss_sp    *byte
 	ss_flags int32
 	ss_size  uintptr
@@ -134,7 +132,7 @@ type sigcontext struct {
 type ucontext struct {
 	uc_flags    uint32
 	uc_link     *ucontext
-	uc_stack    sigaltstackt
+	uc_stack    stackt
 	uc_mcontext sigcontext
 	uc_sigmask  uint32
 	__unused    [31]int32

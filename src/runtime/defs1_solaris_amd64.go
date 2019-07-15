@@ -78,6 +78,7 @@ const (
 	_ITIMER_VIRTUAL = 0x1
 	_ITIMER_PROF    = 0x2
 
+	__SC_PAGESIZE         = 0xb
 	__SC_NPROCESSORS_ONLN = 0xf
 
 	_PTHREAD_CREATE_DETACHED = 0x40
@@ -109,20 +110,13 @@ type semt struct {
 	sem_pad2  [2]uint64
 }
 
-type sigaltstackt struct {
-	ss_sp     *byte
-	ss_size   uint64
-	ss_flags  int32
-	pad_cgo_0 [4]byte
-}
-
 type sigset struct {
 	__sigbits [4]uint32
 }
 
 type stackt struct {
 	ss_sp     *byte
-	ss_size   uint64
+	ss_size   uintptr
 	ss_flags  int32
 	pad_cgo_0 [4]byte
 }
@@ -165,6 +159,12 @@ type ucontext struct {
 type timespec struct {
 	tv_sec  int64
 	tv_nsec int64
+}
+
+//go:nosplit
+func (ts *timespec) setNsec(ns int64) {
+	ts.tv_sec = ns / 1e9
+	ts.tv_nsec = ns % 1e9
 }
 
 type timeval struct {
